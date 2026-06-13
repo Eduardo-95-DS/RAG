@@ -48,7 +48,7 @@ class DocumentProcessor:
 
     def load_from_pdf(self, file_path: Union[str, Path]) -> List[Document]:
         """Load document(s) from a PDF file"""
-        loader = PyPDFDirectoryLoader(str("data"))
+        loader = PyPDFLoader(str(file_path))
         return loader.load()
     
     def load_documents(self, sources: List[str]) -> List[Document]:
