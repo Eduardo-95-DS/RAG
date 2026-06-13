@@ -65,10 +65,13 @@ class DocumentProcessor:
         for src in sources:
             if src.startswith("http://") or src.startswith("https://"):
                 docs.extend(self.load_from_url(src))
+                continue
            
-            path = Path("data")
+            path = Path(src)
             if path.is_dir():  # PDF directory
                 docs.extend(self.load_from_pdf_dir(path))
+            elif path.suffix.lower() == ".pdf":
+                docs.extend(self.load_from_pdf(path))
             elif path.suffix.lower() == ".txt":
                 docs.extend(self.load_from_txt(path))
             else:
