@@ -105,19 +105,25 @@ def main():
     if submit and question:
         if st.session_state.rag_system:
             with st.spinner("Searching..."):
-                start_time = time.time()
                 
-                # Get answer
-                result = st.session_state.rag_system.run(question)
-                
-                elapsed_time = time.time() - start_time
-                
-                # Add to history
-                st.session_state.history.append({
-                    'question': question,
-                    'answer': result['answer'],
-                    'time': elapsed_time
-                })
+                try:                
+                    start_time = time.time()
+                    # Get answer
+                    result = st.session_state.rag_system.run(question)
+                    elapsed_time = time.time() - start_time
+                    
+                except Exception as e:
+                    st.error(f"Failed to answer: {str(e)}")
+                    result = None 
+                    
+                if result is not None:
+                    
+                    # Add to history
+                    st.session_state.history.append({
+                        'question': question,
+                        'answer': result['answer'],
+                        'time': elapsed_time
+                    })
                 
                 # Display answer
                 st.markdown("### 💡 Answer")
