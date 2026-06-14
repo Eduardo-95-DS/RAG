@@ -46,6 +46,6 @@ class VectorStore:
         Returns:
             List of relevant documents
         """
-        if self.retriever is None:
+        if self.vectorstore is None:
             raise ValueError("Vector store not initialized. Call create_vectorstore first.")
-        return self.retriever.invoke(query)
+        return self.vectorscore.similarity_search(query, k=k)
