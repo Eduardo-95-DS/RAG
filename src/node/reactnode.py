@@ -17,6 +17,7 @@ _wiki_wrapper = WikipediaAPIWrapper(top_k_results=3, lang="en")
 @tool
 def wikipedia(query: str) -> str:
     """Search Wikipedia for general knowledge."""
+    print(f"\n[TOOL] wikipedia called with: '{query}'")
     return _wiki_wrapper.run(query)
 
 
@@ -44,6 +45,7 @@ class RAGNodes:
         """Build retriever + wikipedia tools"""
 
         def retriever_tool_fn(query: str) -> str:
+            print(f"\n[TOOL] retriever called with: '{query}'")
             docs: List[Document] = self.retriever.invoke(query)
             if not docs:
                 return "No documents found."
