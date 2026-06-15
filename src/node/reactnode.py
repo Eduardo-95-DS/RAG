@@ -4,13 +4,24 @@ from typing import List, Optional
 from src.state.rag_state import RAGState
 
 from langchain_core.documents import Document
-from langchain_core.tools import Tool
+from langchain_core.tools import tool, StructuredTool
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
-
-# Wikipedia tool
 from langchain_community.utilities import WikipediaAPIWrapper
-from langchain_community.tools.wikipedia.tool import WikipediaQueryRun
+from pydantic import BaseModel
+
+
+# Module-level wikipedia tool (needs @tool, can't be a closure)
+_wiki_wrapper = WikipediaAPIWrapper(top_k_results=3, lang="en")
+
+@tool
+def wikipedia(query: str) -> str:
+    """Search Wikipedia for general knowledge."""
+    return _wiki_wrapper.run(query)
+
+
+class RetrieverInput(BaseModel):
+    query: str
 
 
 class RAGNodes:
@@ -19,7 +30,7 @@ class RAGNodes:
     def __init__(self, retriever, llm):
         self.retriever = retriever
         self.llm = llm
-        self._agent = None  # lazy-init agent
+        self._agent = None
 
     def retrieve_docs(self, state: RAGState) -> RAGState:
         """Classic retriever node"""
@@ -29,7 +40,7 @@ class RAGNodes:
             retrieved_docs=docs
         )
 
-    def _build_tools(self) -> List[Tool]:
+    def _build_tools(self):
         """Build retriever + wikipedia tools"""
 
         def retriever_tool_fn(query: str) -> str:
@@ -43,22 +54,14 @@ class RAGNodes:
                 merged.append(f"[{i}] {title}\n{d.page_content}")
             return "\n\n".join(merged)
 
-        retriever_tool = Tool(
+        retriever_tool = StructuredTool.from_function(
+            func=retriever_tool_fn,
             name="retriever",
             description="Fetch passages from indexed corpus.",
-            func=retriever_tool_fn,
+            args_schema=RetrieverInput,
         )
 
-        wiki = WikipediaQueryRun(
-            api_wrapper=WikipediaAPIWrapper(top_k_results=3, lang="en")
-        )
-        wikipedia_tool = Tool(
-            name="wikipedia",
-            description="Search Wikipedia for general knowledge.",
-            func=wiki.run,
-        )
-
-        return [retriever_tool, wikipedia_tool]
+        return [retriever_tool, wikipedia]
 
     def _build_agent(self):
         """ReAct agent with tools"""
@@ -68,12 +71,10 @@ class RAGNodes:
             "Prefer 'retriever' for user-provided docs; use 'wikipedia' for general knowledge. "
             "Return only the final useful answer."
         )
-        self._agent = create_react_agent(self.llm, tools=tools,prompt=system_prompt)
+        self._agent = create_react_agent(self.llm, tools=tools, prompt=system_prompt)
 
     def generate_answer(self, state: RAGState) -> RAGState:
-        """
-        Generate answer using ReAct agent with retriever + wikipedia.
-        """
+        """Generate answer using ReAct agent with retriever + wikipedia."""
         if self._agent is None:
             self._build_agent()
 
@@ -82,8 +83,7 @@ class RAGNodes:
         messages = result.get("messages", [])
         answer: Optional[str] = None
         if messages:
-            answer_msg = messages[-1]
-            answer = getattr(answer_msg, "content", None)
+            answer = getattr(messages[-1], "content", None)
 
         return RAGState(
             question=state.question,

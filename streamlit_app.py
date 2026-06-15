@@ -104,14 +104,12 @@ def main():
     # Process search
     if submit and question:
         if st.session_state.rag_system:
-            with st.spinner("Searching..."):
-                
+            with st.spinner("Searching..."):               
                 try:                
                     start_time = time.time()
                     # Get answer
                     result = st.session_state.rag_system.run(question)
-                    elapsed_time = time.time() - start_time
-                    
+                    elapsed_time = time.time() - start_time                    
                 except Exception as e:
                     st.error(f"Failed to answer: {str(e)}")
                     result = None 
@@ -125,21 +123,21 @@ def main():
                         'time': elapsed_time
                     })
                 
-                # Display answer
-                st.markdown("### 💡 Answer")
-                st.success(result['answer'])
+                    # Display answer
+                    st.markdown("### 💡 Answer")
+                    st.success(result['answer'])
                 
-                # Show retrieved docs in expander
-                with st.expander("📄 Source Documents"):
-                    for i, doc in enumerate(result['retrieved_docs'], 1):
-                        st.text_area(
-                            f"Document {i}",
-                            doc.page_content[:300] + "...",
-                            height=100,
-                            disabled=True
+                    # Show retrieved docs in expander
+                    with st.expander("📄 Source Documents"):
+                        for i, doc in enumerate(result['retrieved_docs'], 1):
+                            st.text_area(
+                                f"Document {i}",
+                                doc.page_content[:300] + "...",
+                                height=100,
+                                disabled=True
                         )
                 
-                st.caption(f"⏱️ Response time: {elapsed_time:.2f} seconds")
+                    st.caption(f"⏱️ Response time: {elapsed_time:.2f} seconds")
     
     # Show history
     if st.session_state.history:
