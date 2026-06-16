@@ -70,7 +70,7 @@ class RAGNodes:
         tools = self._build_tools()
         system_prompt = (
             "You are a helpful RAG agent. "
-            "Prefer 'retriever' for user-provided docs; use 'wikipedia' for general knowledge. "
+            "Prefer 'retriever' for user-provided docs; use 'wikipedia' for general knowledge."
             "Return only the final useful answer."
         )
         self._agent = create_react_agent(self.llm, tools=tools, prompt=system_prompt)
