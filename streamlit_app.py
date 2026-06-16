@@ -1,11 +1,13 @@
-"""Streamlit UI for Agentic RAG System"""
+"""Streamlit UI for NVIDIA 2025 Annual Report Assistant"""
+
+import os
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 import streamlit as st
 from pathlib import Path
 import sys
 import time
 
-# Add src to path
 sys.path.append(str(Path(__file__).parent))
 
 from src.config.config import Config
@@ -15,19 +17,17 @@ from src.graph_builder.graph_builder import GraphBuilder
 
 FAISS_INDEX_PATH = "faiss_index"
 
-# Page configuration
 st.set_page_config(
-    page_title="🤖 RAG Search",
-    page_icon="🔍",
+    page_title="NVIDIA 2025 Annual Report Assistant",
+    page_icon="📊",
     layout="centered"
 )
 
-# Simple CSS
 st.markdown("""
     <style>
     .stButton > button {
         width: 100%;
-        background-color: #4CAF50;
+        background-color: #76b900;
         color: white;
         font-weight: bold;
     }
@@ -81,8 +81,8 @@ def main():
     """Main application"""
     init_session_state()
 
-    st.title("🔍 RAG Document Search")
-    st.markdown("Ask questions about the loaded documents")
+    st.title("📊 NVIDIA 2025 Annual Report Assistant")
+    st.markdown("Ask any question about NVIDIA's 2025 Annual Report.")
 
     if not st.session_state.initialized:
         with st.spinner("Loading system..."):
@@ -97,52 +97,69 @@ def main():
 
     st.markdown("---")
 
+    # Search form
     with st.form("search_form"):
-        question = st.text_input(
+        typed_question = st.text_input(
             "Enter your question:",
-            placeholder="What would you like to know?"
+            placeholder="e.g. What were NVIDIA's 2025 revenues?"
         )
         submit = st.form_submit_button("🔍 Search")
 
-    if submit and question:
-        if st.session_state.rag_system:
-            with st.spinner("Searching..."):
+    # Suggested questions
+    st.markdown("**Or try one of these:**")
+    col1, col2 = st.columns(2)
+    with col1:
+        q1 = st.button("💰 What were NVIDIA's 2025 revenues?")
+        q2 = st.button("🤖 What is NVIDIA's AI strategy?")
+    with col2:
+        q3 = st.button("📦 What are NVIDIA's main products?")
+        q4 = st.button("👤 Who leads NVIDIA?")
+
+    # Determine which question to process
+    question_to_process = None
+    if submit and typed_question:
+        question_to_process = typed_question.strip()
+    elif q1:
+        question_to_process = "What were NVIDIA's 2025 revenues?"
+    elif q2:
+        question_to_process = "What is NVIDIA's AI strategy?"
+    elif q3:
+        question_to_process = "What are NVIDIA's main products?"
+    elif q4:
+        question_to_process = "Who leads NVIDIA?"
+
+    # Fixed answer area
+    answer_area = st.empty()
+
+    # Process question
+    if question_to_process:
+        if len(question_to_process) > 500:
+            answer_area.warning("Question too long. Please keep it under 500 characters.")
+        elif st.session_state.rag_system:
+            with st.spinner("Retrieving and generating answer (this may take a few seconds)..."):
                 try:
                     start_time = time.time()
-                    result = st.session_state.rag_system.run(question)
+                    result = st.session_state.rag_system.run(question_to_process)
                     elapsed_time = time.time() - start_time
-                except Exception as e:
-                    st.error(f"Failed to answer: {str(e)}")
-                    result = None
-
-                if result is not None:
                     st.session_state.history.append({
-                        'question': question,
+                        'question': question_to_process,
                         'answer': result['answer'],
                         'time': elapsed_time
                     })
+                    with answer_area.container():
+                        st.markdown("### 💡 Answer")
+                        st.success(result['answer'])
+                        st.caption(f"⏱️ Response time: {elapsed_time:.2f} seconds")
+                except Exception as e:
+                    if "rate_limit" in str(e).lower():
+                        answer_area.error("Too many requests. Please wait a moment and try again.")
+                    else:
+                        answer_area.error(f"Failed to answer: {str(e)}")
 
-                    st.markdown("### 💡 Answer")
-                    st.success(result['answer'])
-
-                    with st.expander("📄 Source Documents"):
-                        for i, doc in enumerate(result['retrieved_docs'], 1):
-                            content = doc.page_content[:300]
-                            if len(doc.page_content) > 300:
-                                content += "..."
-                            st.text_area(
-                                f"Document {i}",
-                                content,
-                                height=100,
-                                disabled=True
-                            )
-
-                    st.caption(f"⏱️ Response time: {elapsed_time:.2f} seconds")
-
+    # History
     if st.session_state.history:
         st.markdown("---")
         st.markdown("### 📜 Recent Searches")
-
         for item in reversed(st.session_state.history[-3:]):
             with st.container():
                 st.markdown(f"**Q:** {item['question']}")
