@@ -5,10 +5,9 @@ from langchain.chat_models import init_chat_model
 
 load_dotenv()
 
+
 class Config:
     """Configuration class for RAG system"""
-    # API Keys
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
     # Model Configuration
     LLM_MODEL = "groq:meta-llama/llama-4-scout-17b-16e-instruct"
@@ -17,7 +16,7 @@ class Config:
     CHUNK_SIZE = 500
     CHUNK_OVERLAP = 50
 
-    # Default URLs
+    # Default sources
     DEFAULT_URLS = [
         "data"
     ]
@@ -25,5 +24,10 @@ class Config:
     @classmethod
     def get_llm(cls):
         """Initialize and return the LLM model"""
-        os.environ["GROQ_API_KEY"] = cls.GROQ_API_KEY
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "GROQ_API_KEY is not set. "
+                "Add it to .env locally or to Streamlit Cloud secrets."
+            )
         return init_chat_model(cls.LLM_MODEL)
