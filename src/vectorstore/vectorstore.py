@@ -12,7 +12,7 @@ class VectorStore:
     
     def __init__(self):
         """Initialize vector store with OpenAI embeddings"""
-        self.embedding = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        self.embedding = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
         self.vectorstore = None
         self.retriever = None
     
