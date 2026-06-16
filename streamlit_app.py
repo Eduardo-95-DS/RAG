@@ -1,6 +1,6 @@
 """Streamlit UI for NVIDIA 2025 Annual Report Assistant"""
 
-import os
+# import os
 # os.environ["HF_HUB_OFFLINE"] = "1"
 
 import streamlit as st
