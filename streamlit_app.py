@@ -60,7 +60,7 @@ def initialize_rag():
             vector_store.load(FAISS_INDEX_PATH)
             num_chunks = "cached"
         else:
-            documents = doc_processor.process_urls(Config.DEFAULT_URLS)
+            documents = doc_processor.process_urls(Config.SOURCES)
             vector_store.create_vectorstore(documents)
             vector_store.save(FAISS_INDEX_PATH)
             num_chunks = len(documents)

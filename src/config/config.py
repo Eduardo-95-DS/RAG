@@ -17,7 +17,7 @@ class Config:
     CHUNK_OVERLAP = 50
 
     # Default sources
-    DEFAULT_URLS = [
+    SOURCES = [
         "data"
     ]
 
