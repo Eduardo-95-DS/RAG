@@ -2,20 +2,10 @@
 from typing import List, Optional
 from src.state.rag_state import RAGState
 from langchain_core.documents import Document
-from langchain_core.tools import tool, StructuredTool
+from langchain_core.tools import StructuredTool
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
-from langchain_community.utilities import WikipediaAPIWrapper
 from pydantic import BaseModel
-
-# Module-level wikipedia tool (needs @tool, can't be a closure)
-_wiki_wrapper = WikipediaAPIWrapper(top_k_results=3, lang="en")
-
-@tool
-def wikipedia(query: str) -> str:
-    """Search Wikipedia for general knowledge."""
-    print(f"\n[TOOL] wikipedia called with: '{query}'")
-    return _wiki_wrapper.run(query)
 
 
 class RetrieverInput(BaseModel):
@@ -39,7 +29,7 @@ class RAGNodes:
         )
 
     def _build_tools(self):
-        """Build retriever + wikipedia tools"""
+        """Build retriever tool"""
         def retriever_tool_fn(query: str) -> str:
             print(f"\n[TOOL] retriever called with: '{query}'")
             docs: List[Document] = self.retriever.invoke(query)
@@ -58,23 +48,21 @@ class RAGNodes:
             description="Fetch passages from the NVIDIA 2025 Annual Report.",
             args_schema=RetrieverInput,
         )
-        return [retriever_tool, wikipedia]
+        return [retriever_tool]
 
     def _build_agent(self):
-        """ReAct agent with tools"""
+        """ReAct agent with retriever tool"""
         tools = self._build_tools()
         system_prompt = (
-            "You are an assistant with access to NVIDIA's 2025 Annual Report. "
-            "When asked about NVIDIA, its products, financials, strategy, or anything "
-            "that could be in that document, always call the 'retriever' tool first. "
-            "Use 'wikipedia' only for general background knowledge not covered by the report. "
+            "You have access to one tool: a retriever over the NVIDIA 2025 Annual Report. "
+            "If the answer is not in the document, say so. "
             "Never describe your tools or capabilities. "
             "Always answer directly and naturally based on what you retrieve."
         )
         self._agent = create_react_agent(self.llm, tools=tools, prompt=system_prompt)
 
     def generate_answer(self, state: RAGState) -> RAGState:
-        """Generate answer using ReAct agent with retriever + wikipedia."""
+        """Generate answer using ReAct agent with retriever."""
         if self._agent is None:
             self._build_agent()
 
