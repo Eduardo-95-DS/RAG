@@ -33,7 +33,6 @@ pypdf==6.0.0
 beautifulsoup4==4.13.4
 
 # Tools
-wikipedia==1.4.0
 groq==0.37.1
 
 # Pydantic

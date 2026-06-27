@@ -19,6 +19,5 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "requests>=2.32.4",
     "sentence-transformers>=5.5.1",
-    "streamlit>=1.48.1",
-    "wikipedia>=1.4.0",
+    "streamlit>=1.48.1"
 ]
