@@ -11,3 +11,7 @@ wheels/
 .env
 .python-version
 groq_available_models.py
+
+# Logs
+rag.log
+rag.log.*
