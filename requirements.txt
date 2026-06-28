@@ -38,3 +38,6 @@ groq==0.37.1
 # Pydantic
 pydantic==2.11.7
 pydantic-settings==2.10.1
+
+# Hybrid search
+rank_bm25==0.2.2
