@@ -66,7 +66,7 @@ def initialize_rag():
             num_chunks = len(documents)
 
         graph_builder = GraphBuilder(
-            retriever=vector_store.get_retriever(),
+            retriever=vector_store.get_hybrid_retriever(),
             llm=llm
         )
         graph_builder.build()
