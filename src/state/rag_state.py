@@ -7,7 +7,8 @@ from langchain_core.documents import Document
 
 class RAGState(BaseModel):
     """State object for RAG workflow"""
-    
+
     question: str
+    rewritten_query: str = ""
     retrieved_docs: List[Document] = []
     answer: str = ""
