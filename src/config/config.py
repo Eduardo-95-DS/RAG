@@ -14,6 +14,9 @@ class Config:
 
     # Document Processing
     CHUNK_SIZE = 500
+    # Overlap is 10% of chunk size. Enough to prevent meaning loss at boundaries
+    # (a sentence split across two chunks remains readable in both) without
+    # significantly inflating the total chunk count or retrieval token cost.
     CHUNK_OVERLAP = 50
 
     # Default sources
