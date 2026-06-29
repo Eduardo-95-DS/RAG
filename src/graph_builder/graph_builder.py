@@ -28,13 +28,19 @@ class GraphBuilder:
         self.graph = builder.compile()
         return self.graph
 
-    def run(self, question: str) -> dict:
-        """Run the RAG workflow"""
+    def run(self, question: str, history: list = None) -> dict:
+        """Run the RAG workflow.
+
+        Args:
+            question: The user's current question.
+            history: Optional list of prior turns, each a dict with keys 'q' and 'a'.
+                     Used by the rewriter to resolve conversational references.
+        """
         if self.graph is None:
             self.build()
         log.info("[QUERY] '%s'", question)
         t0 = time.monotonic()
-        initial_state = RAGState(question=question)
+        initial_state = RAGState(question=question, conversation_history=history or [])
         result = self.graph.invoke(initial_state)
         elapsed = time.monotonic() - t0
         answer = result.get("answer", "")
