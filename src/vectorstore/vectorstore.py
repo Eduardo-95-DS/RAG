@@ -52,10 +52,15 @@ class VectorStore:
         docstore = self.vectorstore.docstore
         return [docstore.search(doc_id) for doc_id in self.vectorstore.index_to_docstore_id.values()]
 
-    def get_hybrid_retriever(self, k: int = 8) -> "HybridRetriever":
-        """Return a HybridRetriever combining FAISS and BM25 with RRF."""
+    def get_hybrid_retriever(self, k: int = 8, rerank_top_k: int = 5) -> "HybridRetriever":
+        """Return a HybridRetriever combining FAISS and BM25 with RRF, then reranked."""
         docs = self.get_all_documents()
-        return HybridRetriever(faiss_retriever=self.get_retriever(), documents=docs, k=k)
+        return HybridRetriever(
+            faiss_retriever=self.get_retriever(),
+            documents=docs,
+            k=k,
+            rerank_top_k=rerank_top_k,
+        )
 
 
 class CrossEncoderReranker:
