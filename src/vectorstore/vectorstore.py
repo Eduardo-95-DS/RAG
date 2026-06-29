@@ -4,6 +4,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
+from sentence_transformers import CrossEncoder
 
 
 class VectorStore:
@@ -57,17 +58,58 @@ class VectorStore:
         return HybridRetriever(faiss_retriever=self.get_retriever(), documents=docs, k=k)
 
 
+class CrossEncoderReranker:
+    """
+    Reranks a candidate set of documents using a cross-encoder model.
+
+    A cross-encoder takes (query, document) pairs and produces a relevance
+    score for each pair jointly — unlike a bi-encoder (e.g. BGE), which
+    encodes query and document independently. Joint encoding is slower but
+    significantly more accurate for ranking, which is why cross-encoders
+    are used as a second-stage reranker rather than a first-stage retriever.
+
+    Model: cross-encoder/ms-marco-MiniLM-L-6-v2
+      - Trained on MS MARCO passage ranking (150M query-passage pairs).
+      - ~80 MB, runs on CPU, no API call required.
+      - Suitable for Streamlit Cloud's free tier environment.
+    """
+
+    MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+    def __init__(self, top_k: int = 5):
+        self._model = CrossEncoder(self.MODEL)
+        self.top_k = top_k
+
+    def rerank(self, query: str, docs: List[Document]) -> List[Document]:
+        """Score every (query, doc) pair and return the top_k highest-scoring docs."""
+        if not docs:
+            return docs
+        pairs = [(query, doc.page_content) for doc in docs]
+        scores = self._model.predict(pairs)
+        ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
+        return [doc for _, doc in ranked[: self.top_k]]
+
+
 class HybridRetriever:
     """
     Combines FAISS (semantic) and BM25 (lexical) retrieval using
     Reciprocal Rank Fusion: score = sum(1 / (k + rank)) across both lists.
+    After RRF merging, a cross-encoder reranker narrows the candidate set
+    from k down to rerank_top_k before returning.
     """
 
     RRF_K = 60
 
-    def __init__(self, faiss_retriever, documents: List[Document], k: int = 8):
+    def __init__(
+        self,
+        faiss_retriever,
+        documents: List[Document],
+        k: int = 8,
+        rerank_top_k: int = 5,
+    ):
         self.faiss_retriever = faiss_retriever
-        self.k = k
+        self.k = k  # number of RRF candidates to generate
+        self._reranker = CrossEncoderReranker(top_k=rerank_top_k)
         self._docs = documents
         tokenized = [doc.page_content.lower().split() for doc in documents]
         self._bm25 = BM25Okapi(tokenized)
@@ -100,4 +142,5 @@ class HybridRetriever:
     def invoke(self, query: str) -> List[Document]:
         faiss_docs = self.faiss_retriever.invoke(query)
         bm25_docs = self._bm25_search(query)
-        return self._rrf_merge(faiss_docs, bm25_docs)
+        candidates = self._rrf_merge(faiss_docs, bm25_docs)  # up to k=8
+        return self._reranker.rerank(query, candidates)       # narrowed to rerank_top_k=5
