@@ -38,16 +38,39 @@ class RAGNodes:
         self._last_retrieved: List[Document] = []
 
     REWRITE_PROMPT = (
-        "Rewrite the user's question as a precise, self-contained query suitable for "
-        "searching a financial annual report. Remove conversational phrasing. "
-        "Expand abbreviations. Output only the rewritten query — no explanation."
+        "You are a query rewriter for a financial document search system.\n"
+        "You will receive a current question and, optionally, recent conversation history.\n\n"
+        "Do two things in order:\n"
+        "1. Resolve any references that depend on prior turns. "
+        "For example, if the history shows the last question was about data center revenue "
+        "and the current question is 'How does that compare to last year?', "
+        "rewrite it as 'How did NVIDIA data center revenue in FY2025 compare to FY2024?'\n"
+        "2. Reformulate the result as a precise, self-contained query optimized for "
+        "searching a financial annual report: remove conversational phrasing, expand abbreviations.\n\n"
+        "If there is no conversation history, or the question is already self-contained, "
+        "just do step 2.\n\n"
+        "Output only the rewritten query — no explanation, no preamble."
     )
 
     def rewrite_query(self, state: RAGState) -> RAGState:
-        """Rewrite the raw question into a retrieval-optimized query."""
+        """Rewrite the raw question into a retrieval-optimized, self-contained query.
+
+        If conversation_history is present, the prompt instructs the model to first
+        resolve any references to prior turns (e.g. 'that', 'them', 'last year')
+        before reformulating for retrieval.
+        """
+        # Build an optional history block to prepend to the user message.
+        history_block = ""
+        if state.conversation_history:
+            turns = state.conversation_history[-3:]  # last 3 turns is enough context
+            formatted = "\n".join(f"Q: {t['q']}\nA: {t['a']}" for t in turns)
+            history_block = f"Conversation history:\n{formatted}\n\n"
+
+        user_content = f"{history_block}Current question: {state.question}"
+
         messages = [
             SystemMessage(content=self.REWRITE_PROMPT),
-            HumanMessage(content=state.question),
+            HumanMessage(content=user_content),
         ]
         response = self.llm.invoke(messages)
         rewritten = response.content.strip()
@@ -57,6 +80,7 @@ class RAGNodes:
             rewritten_query=rewritten,
             retrieved_docs=state.retrieved_docs,
             answer=state.answer,
+            conversation_history=state.conversation_history,
         )
 
     def retrieve_docs(self, state: RAGState) -> RAGState:
