@@ -18,10 +18,24 @@ class RetrieverInput(BaseModel):
 class RAGNodes:
     """Contains node functions for RAG workflow"""
 
+    FALLBACK_ANSWER = (
+        "I wasn't able to find a reliable answer in the NVIDIA 2025 Annual Report "
+        "for that question."
+    )
+
+    GROUND_CHECK_PROMPT = (
+        "You are a grounding checker. Given retrieved document passages and an AI-generated answer, "
+        "respond with only YES or NO.\n"
+        "YES = the answer makes claims not supported by the provided passages.\n"
+        "NO = the answer is fully supported by the passages.\n"
+        "Output only YES or NO."
+    )
+
     def __init__(self, retriever, llm):
         self.retriever = retriever
         self.llm = llm
         self._agent = None
+        self._last_retrieved: List[Document] = []
 
     REWRITE_PROMPT = (
         "Rewrite the user's question as a precise, self-contained query suitable for "
@@ -60,8 +74,10 @@ class RAGNodes:
             docs: List[Document] = self.retriever.invoke(query)
             if not docs:
                 log.warning("[TOOL] retriever returned 0 chunks | query='%s'", query)
+                self._last_retrieved = []
                 return "No documents found."
             log.info("[TOOL] retriever returned %d chunks | query='%s'", len(docs), query)
+            self._last_retrieved = docs
             merged = []
             for i, d in enumerate(docs[:8], start=1):
                 meta = d.metadata if hasattr(d, "metadata") else {}
@@ -104,6 +120,39 @@ class RAGNodes:
 
         return RAGState(
             question=state.question,
+            rewritten_query=state.rewritten_query,
+            retrieved_docs=self._last_retrieved,
+            answer=answer or "Could not generate answer.",
+        )
+
+    def ground_check(self, state: RAGState) -> RAGState:
+        """Check whether the answer is grounded in the retrieved chunks."""
+        if not state.retrieved_docs:
+            log.warning("[GROUND] no retrieved docs — returning fallback")
+            return RAGState(
+                question=state.question,
+                rewritten_query=state.rewritten_query,
+                retrieved_docs=state.retrieved_docs,
+                answer=self.FALLBACK_ANSWER,
+            )
+
+        context = "\n\n".join(d.page_content for d in state.retrieved_docs[:8])
+        user_msg = (
+            f"Passages:\n{context}\n\n"
+            f"Answer:\n{state.answer}\n\n"
+            "Does the answer make claims not supported by the passages? YES or NO."
+        )
+        response = self.llm.invoke([
+            SystemMessage(content=self.GROUND_CHECK_PROMPT),
+            HumanMessage(content=user_msg),
+        ])
+        verdict = response.content.strip().upper()
+        log.info("[GROUND] verdict='%s' | answer='%s...'", verdict, state.answer[:80])
+
+        final_answer = self.FALLBACK_ANSWER if "YES" in verdict else state.answer
+        return RAGState(
+            question=state.question,
+            rewritten_query=state.rewritten_query,
             retrieved_docs=state.retrieved_docs,
-            answer=answer or "Could not generate answer."
+            answer=final_answer,
         )

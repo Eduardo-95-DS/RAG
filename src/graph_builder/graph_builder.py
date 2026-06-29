@@ -20,9 +20,11 @@ class GraphBuilder:
         builder = StateGraph(RAGState)
         builder.add_node("rewriter", self.nodes.rewrite_query)
         builder.add_node("responder", self.nodes.generate_answer)
+        builder.add_node("guardrail", self.nodes.ground_check)
         builder.set_entry_point("rewriter")
         builder.add_edge("rewriter", "responder")
-        builder.add_edge("responder", END)
+        builder.add_edge("responder", "guardrail")
+        builder.add_edge("guardrail", END)
         self.graph = builder.compile()
         return self.graph
 
