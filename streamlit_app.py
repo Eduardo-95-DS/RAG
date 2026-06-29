@@ -139,7 +139,15 @@ def main():
             with st.spinner("Retrieving and generating answer (this may take a few seconds)..."):
                 try:
                     start_time = time.time()
-                    result = st.session_state.rag_system.run(question_to_process)
+                    # Format the last 3 Q/A turns so the rewriter can resolve
+                    # conversational references (e.g. "How does that compare?").
+                    history_for_rag = [
+                        {"q": h["question"], "a": h["answer"]}
+                        for h in st.session_state.history[-3:]
+                    ]
+                    result = st.session_state.rag_system.run(
+                        question_to_process, history=history_for_rag
+                    )
                     elapsed_time = time.time() - start_time
                     st.session_state.history.append({
                         'question': question_to_process,
