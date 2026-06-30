@@ -30,6 +30,7 @@ safetensors==0.8.0
 
 # Document loading
 pypdf==6.0.0
+pdfplumber==0.11.9
 beautifulsoup4==4.13.4
 
 # Tools
