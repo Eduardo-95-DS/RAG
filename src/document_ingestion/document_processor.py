@@ -8,12 +8,13 @@ from langchain_core.documents import Document
 
 from typing import List, Union
 from pathlib import Path
+import pdfplumber
 from langchain_community.document_loaders import (
     WebBaseLoader,
-    PyPDFLoader,
     TextLoader,
-    PyPDFDirectoryLoader
 )
+
+from src.document_ingestion.table_extractor import tables_to_prose
 
 class DocumentProcessor:
     """Handles document loading and processing"""
@@ -38,9 +39,12 @@ class DocumentProcessor:
         return loader.load()
 
     def load_from_pdf_dir(self, directory: Union[str, Path]) -> List[Document]:
-        """Load documents from all PDFs inside a directory"""
-        loader = PyPDFDirectoryLoader(str(directory))
-        return loader.load()
+        """Load documents from all PDFs inside a directory (table-aware)"""
+        directory = Path(directory)
+        docs: List[Document] = []
+        for pdf_path in sorted(directory.glob("*.pdf")):
+            docs.extend(self.load_from_pdf(pdf_path))
+        return docs
 
     def load_from_txt(self, file_path: Union[str, Path]) -> List[Document]:
         """Load document(s) from a TXT file"""
@@ -48,9 +52,35 @@ class DocumentProcessor:
         return loader.load()
 
     def load_from_pdf(self, file_path: Union[str, Path]) -> List[Document]:
-        """Load document(s) from a PDF file"""
-        loader = PyPDFLoader(str(file_path))
-        return loader.load()
+        """Load document(s) from a PDF file, one Document per page.
+
+        Each page's plain-text extraction is kept as-is, and -- if the page
+        contains a detected table -- a prose conversion of that table is
+        appended below it. The original text is never replaced, so a parse
+        failure in the table converter only means a missed opportunity, not
+        lost content.
+        """
+        file_path = Path(file_path)
+        docs: List[Document] = []
+        with pdfplumber.open(str(file_path)) as pdf:
+            total_pages = len(pdf.pages)
+            for i, page in enumerate(pdf.pages):
+                text = page.extract_text() or ""
+                prose = tables_to_prose(page)
+                content = f"{text}\n\n{prose}".strip() if prose else text
+                docs.append(
+                    Document(
+                        page_content=content,
+                        metadata={
+                            "source": str(file_path),
+                            "page": i,
+                            "page_label": str(i + 1),
+                            "total_pages": total_pages,
+                            "has_tables": bool(prose),
+                        },
+                    )
+                )
+        return docs
     
     def load_documents(self, sources: List[str]) -> List[Document]:
         """
