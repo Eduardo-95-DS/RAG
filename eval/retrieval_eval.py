@@ -176,7 +176,7 @@ TEST_CASES = [
     },
     {
         "query": "What is NVIDIA's R&D spending?",
-        "keywords": ["research and development", "r&d", "8,675", "3,176"],
+        "keywords": ["research and development", "r&d", "12,914"],
         "note": "R&D expenditure",
     },
 
