@@ -48,7 +48,7 @@ FAISS_INDEX_PATH = "faiss_index"
 #   note      - short label for the report
 # ---------------------------------------------------------------------------
 TEST_CASES = [
-    # --- Financial overview ---
+    # --- Financial overview (income statement) ---
     {
         "query": "What was NVIDIA's total revenue in fiscal year 2025?",
         "keywords": ["130,497", "130.5", "total revenue", "fiscal 2025"],
@@ -60,19 +60,31 @@ TEST_CASES = [
         "note": "Net income FY2025",
     },
     {
-        "query": "What was NVIDIA's gross margin in FY2025?",
-        "keywords": ["gross margin", "74.6", "74.4", "gross profit"],
-        "note": "Gross margin FY2025",
-    },
-    {
-        "query": "What were NVIDIA's operating expenses in FY2025?",
-        "keywords": ["operating expenses", "research and development", "operating income"],
-        "note": "Operating expenses",
-    },
-    {
         "query": "What were NVIDIA's earnings per share in FY2025?",
         "keywords": ["earnings per share", "diluted", "2.94", "per share"],
         "note": "EPS FY2025",
+    },
+    {
+        "query": "What were NVIDIA's sales, general and administrative expenses in FY2025?",
+        "keywords": ["sales, general and administrative", "3,491", "sg&a", "2.7"],
+        "note": "SG&A expenses",
+    },
+    {
+        "query": "What was NVIDIA's income tax expense in FY2025?",
+        "keywords": ["11,146", "income tax", "13.3", "effective tax rate"],
+        "note": "Income tax expense",
+    },
+
+    # --- Cash flow and balance sheet ---
+    {
+        "query": "How much cash did NVIDIA generate from operating activities in FY2025?",
+        "keywords": ["64,089", "operating activities", "cash provided by operating"],
+        "note": "Operating cash flow",
+    },
+    {
+        "query": "What were NVIDIA's total cash, cash equivalents, and marketable securities at end of FY2025?",
+        "keywords": ["43,210", "8,589", "34,621", "cash and cash equivalents", "marketable securities"],
+        "note": "Cash and marketable securities",
     },
 
     # --- Business segments ---
@@ -97,9 +109,9 @@ TEST_CASES = [
         "note": "Automotive segment revenue",
     },
     {
-        "query": "What was NVIDIA's OEM and other revenue?",
-        "keywords": ["oem", "other", "cryptocurrency", "channel"],
-        "note": "OEM & other revenue",
+        "query": "What was NVIDIA's Compute and Networking segment operating income in FY2025?",
+        "keywords": ["82,875", "compute and networking", "segment operating income", "compute & networking"],
+        "note": "Compute & Networking operating income",
     },
 
     # --- Products and architecture ---
@@ -124,22 +136,12 @@ TEST_CASES = [
         "note": "CUDA platform",
     },
     {
-        "query": "What are NVIDIA's DGX systems?",
-        "keywords": ["dgx", "ai supercomputer", "dgx h100", "dgx b200"],
-        "note": "DGX systems",
-    },
-    {
         "query": "What automotive products does NVIDIA offer?",
         "keywords": ["drive", "orin", "jetson", "autonomous vehicle"],
         "note": "Automotive products",
     },
 
     # --- Strategy and competition ---
-    {
-        "query": "Who is the CEO of NVIDIA?",
-        "keywords": ["jensen huang", "chief executive"],
-        "note": "CEO",
-    },
     {
         "query": "What is NVIDIA's strategy for accelerated computing?",
         "keywords": ["accelerated computing", "full-stack", "platform", "data center"],
@@ -171,7 +173,7 @@ TEST_CASES = [
     # --- Capital allocation ---
     {
         "query": "How much did NVIDIA return to shareholders in FY2025?",
-        "keywords": ["buyback", "repurchase", "dividends", "shareholder return"],
+        "keywords": ["repurchase", "34,000", "34.0", "834", "dividends", "shareholder"],
         "note": "Capital return / buybacks",
     },
     {
