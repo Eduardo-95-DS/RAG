@@ -32,6 +32,9 @@ safetensors==0.8.0
 pypdf==6.0.0
 beautifulsoup4==4.13.4
 
+# Cloud Storage
+google-cloud-storage==2.18.0
+
 # Tools
 groq==0.37.1
 
