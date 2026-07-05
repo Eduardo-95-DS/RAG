@@ -1,2 +1,3 @@
 [server]
-fileWatcherType = "none"
+fileWatcherType = "auto"
+runOnSave = true
