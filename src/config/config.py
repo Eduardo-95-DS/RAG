@@ -20,8 +20,9 @@ class Config:
     CHUNK_OVERLAP = 50
 
     # Default sources
+    # On rag-gcp, the PDF lives in Cloud Storage instead of the local data/ folder.
     SOURCES = [
-        "data"
+        "gs://edu-rag-nvidia-docs/NVIDIA-2025-Annual-Report.pdf"
     ]
 
     @classmethod
