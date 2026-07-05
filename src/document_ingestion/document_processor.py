@@ -1,5 +1,6 @@
 """Document processing module for loading and splitting documents"""
 
+import tempfile
 from typing import List
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -14,6 +15,7 @@ from langchain_community.document_loaders import (
     TextLoader,
     PyPDFDirectoryLoader
 )
+from google.cloud import storage
 
 class DocumentProcessor:
     """Handles document loading and processing"""
@@ -51,13 +53,48 @@ class DocumentProcessor:
         """Load document(s) from a PDF file"""
         loader = PyPDFLoader(str(file_path))
         return loader.load()
-    
-    def load_documents(self, sources: List[str]) -> List[Document]:
+
+    def load_from_gcs(self, gcs_uri: str) -> List[Document]:
         """
-        Load documents from URLs, PDF directories, or TXT files
+        Load a PDF document from a Google Cloud Storage bucket.
+
+        Downloads the blob to a local temp file, then reuses the existing
+        PyPDFLoader path. Only single PDF objects are supported (not prefixes
+        / directories) since that is all this project needs today.
 
         Args:
-            sources: List of URLs, PDF folder paths, or TXT file paths
+            gcs_uri: URI in the form gs://bucket-name/path/to/file.pdf
+
+        Returns:
+            List of loaded documents
+        """
+        if not gcs_uri.startswith("gs://"):
+            raise ValueError(f"Not a GCS URI: {gcs_uri}")
+
+        bucket_name, _, blob_name = gcs_uri[len("gs://"):].partition("/")
+        if not blob_name:
+            raise ValueError(
+                f"GCS URI must point to a specific object, got: {gcs_uri}"
+            )
+        if not blob_name.lower().endswith(".pdf"):
+            raise ValueError(
+                f"Only PDF objects are supported from GCS, got: {gcs_uri}"
+            )
+
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp_file:
+            blob.download_to_filename(tmp_file.name)
+            return self.load_from_pdf(tmp_file.name)
+
+    def load_documents(self, sources: List[str]) -> List[Document]:
+        """
+        Load documents from URLs, GCS PDF objects, PDF directories, or TXT files
+
+        Args:
+            sources: List of URLs, gs:// PDF paths, PDF folder paths, or TXT file paths
 
         Returns:
             List of loaded documents
@@ -67,7 +104,11 @@ class DocumentProcessor:
             if src.startswith("http://") or src.startswith("https://"):
                 docs.extend(self.load_from_url(src))
                 continue
-           
+
+            if src.startswith("gs://"):
+                docs.extend(self.load_from_gcs(src))
+                continue
+
             path = Path(src)
             if path.is_dir():  # PDF directory
                 docs.extend(self.load_from_pdf_dir(path))
@@ -78,7 +119,7 @@ class DocumentProcessor:
             else:
                 raise ValueError(
                     f"Unsupported source type: {src}. "
-                    "Use URL, .txt file, or PDF directory."
+                    "Use URL, gs:// PDF path, .txt file, or PDF directory."
                 )
         return docs
     
