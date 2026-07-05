@@ -81,10 +81,42 @@ def main():
     """Main application"""
     init_session_state()
 
+    with st.sidebar:
+        st.markdown("### About this document")
+        st.markdown(
+            "This app is grounded in NVIDIA's 2025 Annual Report (Form 10-K + Proxy "
+            "Statement), covering fiscal year ended January 26, 2025."
+        )
+        st.markdown("**You can ask about:**")
+        st.markdown(
+            "- **Financial results** — revenue ($130.5B, up 114% YoY), net income, "
+            "earnings per share, gross margin, operating cash flow, segment breakdowns\n"
+            "- **Business segments** — Data Center, Gaming, Professional Visualization, "
+            "and Automotive revenue and operating income\n"
+            "- **Products and architecture** — Blackwell, Hopper, H100/H200, NVLink, "
+            "CUDA, DRIVE, Jetson, and more\n"
+            "- **Strategy** — NVIDIA's accelerated computing platform, AI factory "
+            "vision, software stack, and partnerships\n"
+            "- **Risks** — export controls and China exposure, competition from AMD "
+            "and Intel, TSMC manufacturing dependency\n"
+            "- **Corporate** — executive compensation, board composition, capital "
+            "return to shareholders, R&D investment, employee headcount"
+        )
+
     st.title("📊 NVIDIA 2025 Annual Report Assistant")
-    st.markdown("Ask any question about NVIDIA's 2025 Annual Report.")
+    st.markdown(
+        "This is NVIDIA's Fiscal Year 2025 Annual Report, covering the company's "
+        "financial results, AI and data center business, product lines, and leadership. "
+        "Ask a question below and get an answer sourced directly from the report."
+    )
 
     if not st.session_state.initialized:
+        st.info(
+            "⏳ If this is the first visit in a while, initial setup can take "
+            "30-60 seconds while the app downloads its embedding model and builds "
+            "its search index. This only happens once per app restart, later "
+            "questions will be fast."
+        )
         with st.spinner("Loading system..."):
             rag_system, num_chunks = initialize_rag()
             if rag_system:
