@@ -11,7 +11,7 @@ dependencies = [
     "google-cloud-storage>=2.18.0",
     "langchain>=0.3.27",
     "langchain-community>=0.3.27",
-    "langchain-google-vertexai>=3.2.4",
+    "langchain-google-vertexai==2.1.2",
     "langchain-groq>=0.3.8",
     "langchain-openai>=0.3.30",
     "langgraph>=0.6.5",
