@@ -1,7 +1,7 @@
 """Vector store module for document embedding and retrieval"""
 from typing import List
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_vertexai import VertexAIEmbeddings
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
@@ -10,8 +10,16 @@ from sentence_transformers import CrossEncoder
 class VectorStore:
     """Manages vector store operations"""
 
+    # VertexAIEmbeddings is deprecated in langchain-google-vertexai in favor of
+    # GoogleGenerativeAIEmbeddings, but that class only documents the preview
+    # gemini-embedding-2-preview model and requires a separate GOOGLE_API_KEY
+    # (Gemini Developer API auth) instead of the IAM/service-account auth used
+    # by every other GCP service in this project (Storage, Secret Manager,
+    # Firestore, Cloud Run). VertexAIEmbeddings still works, still supports
+    # the stable text-embedding-005 model, and uses the same ADC auth as
+    # everything else, so it stays despite the deprecation warning.
     def __init__(self):
-        self.embedding = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+        self.embedding = VertexAIEmbeddings(model_name="text-embedding-005")
         self.vectorstore = None
         self.retriever = None
 
