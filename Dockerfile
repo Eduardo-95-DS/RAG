@@ -9,8 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install dependencies first so this layer is cached unless requirements change
+# --extra-index-url pulls CPU-only torch/triton wheels (no CUDA stack) since
+# Cloud Run has no GPU; all other packages still resolve from PyPI as normal.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    --extra-index-url https://download.pytorch.org/whl/cpu
 
 # App code, including the committed faiss_index/ (bge-small-en-v1.5 embeddings)
 COPY . .
