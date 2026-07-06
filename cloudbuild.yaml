@@ -1,0 +1,41 @@
+steps:
+  # Build the image, tagging with the short commit SHA so every build is
+  # traceable to the exact commit that produced it (and so Artifact Registry
+  # keeps a distinct image per push, not overwriting a fixed tag like ":v3").
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:$SHORT_SHA"
+      - "-t"
+      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:latest"
+      - "."
+
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "--all-tags"
+      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app"
+
+  # Deploy the SHA-tagged image, not :latest — keeps the deployed revision
+  # pinned to a specific, reproducible image even if :latest moves later.
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - "run"
+      - "deploy"
+      - "rag-app"
+      - "--image=southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:$SHORT_SHA"
+      - "--region=southamerica-east1"
+      - "--service-account=rag-cloudrun@$PROJECT_ID.iam.gserviceaccount.com"
+      - "--set-secrets=GROQ_API_KEY=groq-api-key:latest"
+      - "--memory=2Gi"
+      - "--cpu=2"
+      - "--allow-unauthenticated"
+
+images:
+  - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:$SHORT_SHA"
+  - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
