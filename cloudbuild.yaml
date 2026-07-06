@@ -37,12 +37,13 @@ images:
   - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:$SHORT_SHA"
   - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:latest"
 
-# Must match the --service-account set on the trigger (rag-gcp-push-deploy).
-# Cloud Build requires this declared explicitly in the config when a
-# non-default service account is used for the build itself — separate from
-# the --service-account flag in the deploy step above, which sets the
-# *runtime* identity of the deployed Cloud Run service, not the builder.
-serviceAccount: "projects/project-9e00c782-ba03-4970-9d2/serviceAccounts/956647220762@cloudbuild.gserviceaccount.com"
-
+# NOTE: serviceAccount is intentionally NOT declared here. It's already set
+# on the trigger itself (rag-gcp-push-deploy uses
+# 956647220762@cloudbuild.gserviceaccount.com). A prior attempt at declaring
+# it here too, with the exact same value as the trigger, produced
+# "invalid value for build.service_account" — contrary to what
+# https://docs.cloud.google.com/build/docs/securing-builds/configure-user-specified-service-accounts
+# implies (it says a config-level value is merely "ignored" when a trigger
+# invokes the build, not that it causes an error). Testing without it.
 options:
   logging: CLOUD_LOGGING_ONLY
