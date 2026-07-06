@@ -14,6 +14,7 @@ from src.config.config import Config
 from src.document_ingestion.document_processor import DocumentProcessor
 from src.vectorstore.vectorstore import VectorStore
 from src.graph_builder.graph_builder import GraphBuilder
+from src.feedback.feedback_store import save_feedback
 
 FAISS_INDEX_PATH = "faiss_index"
 
@@ -186,6 +187,14 @@ def main():
                         'answer': result['answer'],
                         'time': elapsed_time
                     })
+                    # Unique key per answer so the widget doesn't carry a stale
+                    # selection over from a previous question.
+                    st.session_state.last_result = {
+                        'question': question_to_process,
+                        'rewritten_query': result.get('rewritten_query', ''),
+                        'answer': result['answer'],
+                    }
+                    st.session_state.feedback_key = f"feedback_{len(st.session_state.history)}"
                     with answer_area.container():
                         st.markdown("### 💡 Answer")
                         st.success(result['answer'])
@@ -195,6 +204,23 @@ def main():
                         answer_area.error("Too many requests. Please wait a moment and try again.")
                     else:
                         answer_area.error(f"Failed to answer: {str(e)}")
+
+    # Feedback — shown for the most recent answer only. st.feedback returns
+    # 0 (thumbs down) or 1 (thumbs up) and re-fires on every script rerun with
+    # the same key, so we only save when the rating actually changes.
+    if st.session_state.get("last_result"):
+        rating = st.feedback("thumbs", key=st.session_state.feedback_key)
+        if rating is not None:
+            last_saved_key = st.session_state.get("last_saved_feedback_key")
+            if last_saved_key != st.session_state.feedback_key:
+                mapped_rating = 1 if rating == 1 else -1
+                save_feedback(
+                    query=st.session_state.last_result['question'],
+                    rewritten_query=st.session_state.last_result['rewritten_query'],
+                    answer=st.session_state.last_result['answer'],
+                    rating=mapped_rating,
+                )
+                st.session_state.last_saved_feedback_key = st.session_state.feedback_key
 
     # History
     if st.session_state.history:
