@@ -1,0 +1,8 @@
+.venv
+.git
+.env
+rag.log
+rag.log.*
+__pycache__
+*.py[oc]
+.streamlit/secrets.toml
