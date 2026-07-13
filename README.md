@@ -31,8 +31,8 @@ Answer
 | Component | Choice |
 |---|---|
 | LLM | Groq — `meta-llama/llama-4-scout-17b-16e-instruct` |
-| Embeddings | `BAAI/bge-small-en-v1.5` (HuggingFace, CPU) |
-| Vector store | FAISS (CPU) |
+| Embeddings | Vertex AI `text-embedding-005` (via `langchain-google-vertexai`) |
+| Vector store | FAISS (CPU), persisted to GCS across Cloud Run cold starts |
 | Lexical search | BM25 (`rank_bm25`) |
 | Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
 | Graph | LangGraph |
@@ -65,13 +65,27 @@ All tuneable parameters are in `src/config/config.py`:
 
 ## Retrieval Evaluation
 
+Two ways to run the same 25 query/keyword test cases (hit rate / Recall@5, mean context precision):
+
+**Local, ad hoc** — `eval/retrieval_eval.py`, gitignored, local-only, no gate, just prints a report:
+
 ```bash
 python eval/retrieval_eval.py
 ```
 
-Runs 25 query/keyword test cases and reports hit rate (Recall@5) and mean context precision. Use this before and after any change to chunk size, embedding model, or reranker settings.
+Requires a local `faiss_index/` (built by the app, or pulled from GCS yourself).
 
-**Baseline (RRF k=8, rerank top_k=5):** 96% hit rate, 53% mean context precision.
+**Cloud Build, on demand** — `ci/retrieval_eval.py` via the `rag-gcp-eval-manual` trigger. Pulls the live GCS-cached index (the one Cloud Run actually serves), runs the same test cases, and fails the build if hit rate drops below 90%:
+
+```bash
+gcloud builds triggers run rag-gcp-eval-manual --branch=rag-gcp --region=southamerica-east1
+gcloud builds describe <build-id> --region=southamerica-east1 --format="value(status)"
+gcloud builds log <build-id> --region=southamerica-east1
+```
+
+Not wired to push — retrieval quality doesn't change on most commits, so this stays manual. Run it after any change to chunk size, embedding model, or reranker settings.
+
+**Baseline (RRF k=8, rerank top_k=5, `text-embedding-005`):** 100% hit rate, 61% mean context precision. (Superseded the earlier `bge-small-en-v1.5` baseline of 96% / 53% when the branch moved to Vertex embeddings.)
 
 ## Project Structure
 
@@ -86,9 +100,14 @@ src/
   logging/          Rotating file logger
 
 eval/
-  retrieval_eval.py   Offline retrieval quality script
+  retrieval_eval.py   Local-only retrieval quality script (gitignored)
+
+ci/
+  retrieval_eval.py   Same eval, exit-code gate, run via Cloud Build
 
 data/               Source PDFs
 faiss_index/        Persisted FAISS index (gitignored)
 streamlit_app.py    UI entry point
+cloudbuild.yaml       Push-triggered build/deploy (rag-gcp-push-deploy)
+cloudbuild-eval.yaml  Manual retrieval eval gate (rag-gcp-eval-manual)
 ```
