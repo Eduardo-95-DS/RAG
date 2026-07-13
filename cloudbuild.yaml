@@ -38,8 +38,10 @@ images:
   - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:latest"
 
 # NOTE: serviceAccount is intentionally NOT declared here. It's already set
-# on the trigger itself (rag-gcp-push-deploy uses
-# 956647220762@cloudbuild.gserviceaccount.com). A prior attempt at declaring
+# on the trigger itself (rag-gcp-push-deploy uses the dedicated
+# rag-cloudbuild@<project-id>.iam.gserviceaccount.com — the legacy default
+# {PROJECT_NUMBER}@cloudbuild.gserviceaccount.com was never provisioned on
+# this project). A prior attempt at declaring
 # it here too, with the exact same value as the trigger, produced
 # "invalid value for build.service_account" — contrary to what
 # https://docs.cloud.google.com/build/docs/securing-builds/configure-user-specified-service-accounts
