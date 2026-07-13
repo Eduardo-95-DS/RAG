@@ -10,14 +10,12 @@ WORKDIR /app
 
 # Install dependencies first so this layer is cached unless requirements change
 #
-# NOTE: previously used --extra-index-url https://download.pytorch.org/whl/cpu
-# here to get CPU-only torch (no CUDA stack, smaller image). Reverted
-# 2026-07-06 because download-r2.pytorch.org (Cloudflare-fronted) rejects the
-# TLS handshake from this machine's OpenSSL 3.6.2 — confirmed via curl outside
-# Docker too, so it's a network/TLS issue, not a Dockerfile problem. Revisit
-# once resolved; see reference/known_issues.md.
+# Uses the CPU-only torch wheel index (no CUDA/cuDNN/NCCL, smaller image) —
+# Cloud Run has no GPU to use them anyway. Previously reverted 2026-07-06
+# because download-r2.pytorch.org rejected the TLS handshake from the dev
+# machine; confirmed working again 2026-07-13.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
 
 # App code. No index is committed; the FAISS index is built at startup
 # from Vertex AI embeddings (text-embedding-005).
