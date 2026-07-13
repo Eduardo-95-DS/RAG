@@ -1,10 +1,13 @@
 """Vector store module for document embedding and retrieval"""
+from pathlib import Path
 from typing import List
 from langchain_community.vectorstores import FAISS
 from langchain_google_vertexai import VertexAIEmbeddings
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
+from google.cloud import storage
+from google.cloud.exceptions import NotFound
 
 
 class VectorStore:
@@ -40,6 +43,71 @@ class VectorStore:
             path, self.embedding, allow_dangerous_deserialization=True
         )
         self.retriever = self.vectorstore.as_retriever()
+
+    # -- GCS persistence -----------------------------------------------
+    #
+    # Cold start on Cloud Run has no local disk to reuse (each container
+    # instance starts empty), so "save/load from disk" alone doesn't help
+    # across cold starts the way it does for a long-lived local dev server.
+    # These two methods let a built index survive across cold starts by
+    # round-tripping the two files FAISS.save_local() writes (index.faiss,
+    # index.pkl) through a GCS prefix instead.
+    #
+    # No staleness check: this assumes the corpus and chunking config never
+    # change without a manual index rebuild. If SOURCES or Config.CHUNK_SIZE/
+    # CHUNK_OVERLAP ever change, delete the GCS prefix manually to force a
+    # rebuild — otherwise the next cold start will keep loading the stale
+    # cached index instead of re-embedding.
+    _INDEX_FILES = ("index.faiss", "index.pkl")
+
+    def download_from_gcs(self, gcs_prefix: str, local_path: str = "faiss_index") -> bool:
+        """
+        Download a previously-built FAISS index from a GCS prefix, if present.
+
+        Args:
+            gcs_prefix: URI in the form gs://bucket-name/some/prefix
+                        (both index.faiss and index.pkl are expected there)
+            local_path: local directory to download into
+
+        Returns:
+            True if both index files were found and downloaded, False if
+            either is missing (caller should fall back to building fresh).
+        """
+        if not gcs_prefix.startswith("gs://"):
+            raise ValueError(f"Not a GCS URI: {gcs_prefix}")
+
+        bucket_name, _, prefix = gcs_prefix[len("gs://"):].partition("/")
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+
+        Path(local_path).mkdir(parents=True, exist_ok=True)
+        for filename in self._INDEX_FILES:
+            blob = bucket.blob(f"{prefix.rstrip('/')}/{filename}")
+            try:
+                blob.download_to_filename(str(Path(local_path) / filename))
+            except NotFound:
+                return False
+        return True
+
+    def upload_to_gcs(self, gcs_prefix: str, local_path: str = "faiss_index") -> None:
+        """
+        Upload a locally-built FAISS index (index.faiss, index.pkl) to a GCS
+        prefix, so the next cold start can download it instead of rebuilding.
+
+        Failures are not swallowed here — if this fails, the caller decides
+        whether that's fatal (see initialize_rag() in streamlit_app.py, which
+        logs and continues since the app still works from the local index).
+        """
+        if not gcs_prefix.startswith("gs://"):
+            raise ValueError(f"Not a GCS URI: {gcs_prefix}")
+
+        bucket_name, _, prefix = gcs_prefix[len("gs://"):].partition("/")
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+
+        for filename in self._INDEX_FILES:
+            blob = bucket.blob(f"{prefix.rstrip('/')}/{filename}")
+            blob.upload_from_filename(str(Path(local_path) / filename))
 
     def get_retriever(self):
         """Get the retriever instance"""

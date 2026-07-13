@@ -25,6 +25,11 @@ class Config:
         "gs://edu-rag-nvidia-docs/NVIDIA-2025-Annual-Report.pdf"
     ]
 
+    # Where the built FAISS index is cached across Cloud Run cold starts.
+    # No staleness check: if SOURCES or CHUNK_SIZE/CHUNK_OVERLAP change,
+    # delete this prefix in GCS manually to force a rebuild.
+    FAISS_INDEX_GCS_PREFIX = "gs://edu-rag-nvidia-docs/faiss_index"
+
     @classmethod
     def get_llm(cls):
         """Initialize and return the LLM model"""

@@ -12,6 +12,9 @@ from src.document_ingestion.document_processor import DocumentProcessor
 from src.vectorstore.vectorstore import VectorStore
 from src.graph_builder.graph_builder import GraphBuilder
 from src.feedback.feedback_store import save_feedback
+from src.logging.rag_logger import get_logger
+
+log = get_logger()
 
 FAISS_INDEX_PATH = "faiss_index"
 
@@ -55,13 +58,31 @@ def initialize_rag():
         vector_store = VectorStore()
 
         if Path(FAISS_INDEX_PATH).exists():
+            # Same running container, already warm (e.g. a Streamlit rerun) —
+            # local disk still has it, no GCS round trip needed.
             vector_store.load(FAISS_INDEX_PATH)
             num_chunks = "cached"
+        elif vector_store.download_from_gcs(Config.FAISS_INDEX_GCS_PREFIX, FAISS_INDEX_PATH):
+            # Fresh container, but a prior cold start already built and
+            # uploaded the index — download instead of re-embedding.
+            log.info("Loaded FAISS index from GCS cache, skipped rebuild")
+            vector_store.load(FAISS_INDEX_PATH)
+            num_chunks = "cached (GCS)"
         else:
+            # First cold start ever (or the GCS cache was cleared): build
+            # from source, then upload so the next cold start can skip this.
             documents = doc_processor.process_urls(Config.SOURCES)
             vector_store.create_vectorstore(documents)
             vector_store.save(FAISS_INDEX_PATH)
             num_chunks = len(documents)
+            try:
+                vector_store.upload_to_gcs(Config.FAISS_INDEX_GCS_PREFIX, FAISS_INDEX_PATH)
+                log.info("Uploaded freshly built FAISS index to GCS cache")
+            except Exception as e:
+                # Non-fatal: the app works fine off the local index for this
+                # container's lifetime. Just means the next cold start will
+                # rebuild again instead of hitting the cache.
+                log.warning(f"Failed to upload FAISS index to GCS cache: {e}")
 
         graph_builder = GraphBuilder(
             retriever=vector_store.get_hybrid_retriever(),
