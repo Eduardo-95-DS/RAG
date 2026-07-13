@@ -1,0 +1,38 @@
+# Manual-only retrieval eval gate. Not wired to any push trigger — run it
+# on demand via:
+#   gcloud builds triggers run rag-gcp-eval-manual --branch=rag-gcp
+#
+# Deliberately separate from cloudbuild.yaml: retrieval quality doesn't
+# change on most pushes (chunking/embeddings/reranker config changes rarely),
+# so gating every deploy on this would tax pushes that have nothing to do
+# with retrieval. Run this manually after any change to chunk size,
+# embedding model, or reranker settings — see README "Retrieval Evaluation".
+steps:
+  # Pull the FAISS index from GCS so eval runs against the same index
+  # Cloud Run actually serves, not a freshly-built one.
+  - name: "gcr.io/cloud-builders/gsutil"
+    args:
+      - "-m"
+      - "cp"
+      - "-r"
+      - "gs://edu-rag-nvidia-docs/faiss_index"
+      - "faiss_index"
+
+  # Install deps with uv (same lockfile as the app image — no version
+  # drift between what CI evaluates and what Cloud Run runs) and run the
+  # eval gate. Single step: installing and running together avoids needing
+  # a custom builder image just to get uv onto the base image.
+  - name: "python:3.13-slim"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -eu
+        apt-get update && apt-get install -y --no-install-recommends libgomp1
+        pip install --no-cache-dir uv
+        uv sync --locked --no-cache
+        uv run python ci/retrieval_eval.py --fail-under-hit-rate=0.90
+
+# No images built, no deploy — this pipeline only reports pass/fail.
+options:
+  logging: CLOUD_LOGGING_ONLY
