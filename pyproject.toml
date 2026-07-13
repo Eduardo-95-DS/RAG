@@ -15,6 +15,12 @@ dependencies = [
     "google-cloud-storage>=2.18.0",
     "langchain>=0.3.27",
     "langchain-community>=0.3.27",
+    # Deprecated class, kept deliberately — see vectorstore.py comment for
+    # why (IAM auth consistency + stable text-embedding-005 support).
+    # Pinned to 2.1.2, not latest 3.x: 3.x requires langchain-core>=1.3.2,
+    # which conflicts with the rest of this project's langchain-core 0.3.x
+    # pin (langchain, langchain-groq, etc). Verified 2.1.2 resolves cleanly
+    # against the rest of this file; 3.2.4 does not.
     "langchain-google-vertexai==2.1.2",
     "langchain-groq>=0.3.8",
     "langchain-openai>=0.3.30",
@@ -25,8 +31,13 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "rank-bm25==0.2.2",
     "requests>=2.32.4",
+    # Cross-encoder reranker only (embeddings use Vertex AI, see above) —
+    # still needed for CrossEncoderReranker in vectorstore.py. This is the
+    # only reason torch is a dependency at all; see [tool.uv.sources] below
+    # for why it's pinned to the CPU-only build.
     "sentence-transformers>=5.5.1",
     "streamlit>=1.48.1",
+    "torch>=2.12.0",
 ]
 
 # The app imports its own code as "src.config", "src.node", etc. (not
@@ -37,3 +48,21 @@ packages = ["src", "src.config", "src.document_ingestion", "src.feedback",
             "src.graph_builder", "src.logging", "src.node", "src.state",
             "src.vectorstore"]
 package-dir = {"" = "."}
+
+# Force CPU-only torch on every platform. Without this, uv's default
+# resolution pulls the full CUDA build on Linux (confirmed via uv.lock:
+# torch depends on cuda-bindings/cuda-toolkit on sys_platform == 'linux'),
+# which is ~1GB of GPU libraries Cloud Run can't use (no GPU). This mirrors
+# the pip --extra-index-url https://download.pytorch.org/whl/cpu flag the
+# Dockerfile used before switching to uv — see known_issues.md ("CPU-only
+# torch wheel install") for the history (a transient TLS handshake failure
+# against this index blocked it for a while; confirmed working 2026-07-13).
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
