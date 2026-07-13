@@ -13,6 +13,12 @@ dependencies = [
     "faiss-cpu>=1.12.0",
     "google-cloud-firestore>=2.28.0",
     "google-cloud-storage>=2.18.0",
+    # [evaluation] extra pulls in vertexai.evaluation (EvalTask, predefined
+    # metrics) — only used by ci/answer_quality_eval.py, not the app itself.
+    # google-cloud-aiplatform is already a transitive dep via
+    # langchain-google-vertexai, but without [evaluation] it lacks the eval
+    # submodule entirely.
+    "google-cloud-aiplatform[evaluation]>=1.148.1",
     "langchain>=0.3.27",
     "langchain-community>=0.3.27",
     # Deprecated class, kept deliberately — see vectorstore.py comment for
@@ -26,6 +32,11 @@ dependencies = [
     "langchain-openai>=0.3.30",
     "langgraph>=0.6.5",
     "openai>=1.99.9",
+    # Only ci/answer_quality_eval.py builds a DataFrame directly; already a
+    # transitive dep via streamlit, made explicit since ci/ scripts shouldn't
+    # rely on the app's own transitive dependency graph to happen to include
+    # what they need.
+    "pandas>=2.2.0",
     "pydantic>=2.11.7",
     "pypdf>=6.0.0",
     "python-dotenv>=1.1.1",
