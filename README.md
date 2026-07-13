@@ -87,6 +87,29 @@ Not wired to push — retrieval quality doesn't change on most commits, so this 
 
 **Baseline (RRF k=8, rerank top_k=5, `text-embedding-005`):** 100% hit rate, 61% mean context precision. (Superseded the earlier `bge-small-en-v1.5` baseline of 96% / 53% when the branch moved to Vertex embeddings.)
 
+## Answer Quality Evaluation
+
+Retrieval eval only checks whether the *retriever* finds the right chunks — it says nothing about whether the final, user-facing answer is any good. `ci/answer_quality_eval.py`, run via the `rag-gcp-answer-eval-manual` Cloud Build trigger, closes that gap: it runs the real `rewriter -> responder -> guardrail` graph (the same code path `streamlit_app.py` uses) against the same 25 questions, then scores the final answers with the Vertex AI Gen AI evaluation service (LLM-as-judge, reference-free — no golden answers needed):
+
+```bash
+gcloud builds triggers run rag-gcp-answer-eval-manual --branch=rag-gcp --region=southamerica-east1
+gcloud builds describe <build-id> --region=southamerica-east1 --format="value(status)"
+gcloud builds log <build-id> --region=southamerica-east1
+```
+
+Two metrics, on two different scales (verified against Vertex's own metric docs — don't assume both are 0-1):
+
+| Metric | Scale | Gate | What it checks |
+|---|---|---|---|
+| `groundedness` | 0-1 (binary per example, mean = fraction grounded) | ≥ 0.7 | Is the answer supported by retrieved context? Independent check of what `ground_check` already tries to enforce, scored by a separate judge model instead of the app's own Groq call. |
+| `question_answering_quality` | 1-5 (rating rubric, 5 = best) | ≥ 3.5 | Is this a good, well-formed answer overall? Broader than groundedness — `ground_check` never checks this. |
+
+Not wired to push, same reasoning as the retrieval gate. Run manually after prompt, model, or guardrail changes.
+
+**Baseline (first real run, 2026-07-13):** groundedness 0.84, question_answering_quality 4.76/5.
+
+Requires `GROQ_API_KEY` (Secret Manager, `rag-cloudbuild@` needs `roles/secretmanager.secretAccessor` on it) to generate answers, and the Generative Language API (`generativelanguage.googleapis.com`) enabled on the project for the judge model call — this was the actual blocker the first time this was set up, not an IAM role gap.
+
 ## Project Structure
 
 ```
@@ -103,11 +126,13 @@ eval/
   retrieval_eval.py   Local-only retrieval quality script (gitignored)
 
 ci/
-  retrieval_eval.py   Same eval, exit-code gate, run via Cloud Build
+  retrieval_eval.py       Same retrieval eval, exit-code gate, run via Cloud Build
+  answer_quality_eval.py  Full-pipeline answer quality gate (Gen AI eval service)
 
 data/               Source PDFs
 faiss_index/        Persisted FAISS index (gitignored)
 streamlit_app.py    UI entry point
-cloudbuild.yaml       Push-triggered build/deploy (rag-gcp-push-deploy)
-cloudbuild-eval.yaml  Manual retrieval eval gate (rag-gcp-eval-manual)
+cloudbuild.yaml             Push-triggered build/deploy (rag-gcp-push-deploy)
+cloudbuild-eval.yaml        Manual retrieval eval gate (rag-gcp-eval-manual)
+cloudbuild-answer-eval.yaml Manual answer-quality eval gate (rag-gcp-answer-eval-manual)
 ```

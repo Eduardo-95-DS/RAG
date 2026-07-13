@@ -42,7 +42,7 @@ steps:
         uv sync --locked --no-cache
         uv run python ci/answer_quality_eval.py \
           --fail-under-groundedness=0.7 \
-          --fail-under-qa-quality=0.7
+          --fail-under-qa-quality=3.5
 
 # No images built, no deploy — this pipeline only reports pass/fail.
 options:

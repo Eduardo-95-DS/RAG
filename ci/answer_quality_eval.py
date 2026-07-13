@@ -9,15 +9,20 @@ same code path streamlit_app.py uses) against a fixed question set, then
 scores the final, user-facing answers with the Vertex AI Gen AI evaluation
 service (LLM-as-judge).
 
-Metrics used (both reference-free — no golden answers required):
-  groundedness              - is the answer supported by the retrieved
-                               context? Directly mirrors what ground_check
-                               in reactnode.py already tries to enforce,
-                               but scored by an independent judge model
-                               instead of the app's own Groq call.
-  question_answering_quality - is this a good, well-formed answer to the
-                               question overall? Broader than groundedness;
-                               ground_check never checks this at all.
+Metrics used (both reference-free — no golden answers required). Note the
+two metrics are on DIFFERENT scales — confirmed against Vertex's predefined
+metric docs after the first real run, don't assume both are 0-1:
+  groundedness               - 0-1 scale (binary per example: grounded or
+                               not; the mean is a fraction). Is the answer
+                               supported by the retrieved context? Directly
+                               mirrors what ground_check in reactnode.py
+                               already tries to enforce, but scored by an
+                               independent judge model instead of the app's
+                               own Groq call.
+  question_answering_quality - 1-5 scale (rating rubric, 5=best). Is this a
+                               good, well-formed answer overall? Broader
+                               than groundedness; ground_check never checks
+                               this at all. First real run: 4.76/5 mean.
 
 Deliberately NOT using question_answering_correctness (would require a
 golden reference answer per question — a maintenance burden not taken on
@@ -27,7 +32,7 @@ a problem in practice.
 Usage
 -----
     python ci/answer_quality_eval.py --fail-under-groundedness=0.7 \\
-        --fail-under-qa-quality=0.7
+        --fail-under-qa-quality=3.5
 
 Requires faiss_index/ to exist (pulled from GCS by the calling Cloud Build
 step) and GROQ_API_KEY set in the environment (the app's own LLM, used to
@@ -178,15 +183,19 @@ if __name__ == "__main__":
         "--fail-under-groundedness",
         type=float,
         default=0.7,
-        help="Exit 1 if mean groundedness score falls below this (0-1 scale "
-             "as returned by the Gen AI eval service; default: 0.7)",
+        help="Exit 1 if mean groundedness score falls below this. Scale: "
+             "0-1 (binary per-example, confirmed via Vertex's predefined "
+             "metric docs — groundedness is scored 0 or 1 per response, "
+             "so the mean is a fraction grounded). Default: 0.7.",
     )
     parser.add_argument(
         "--fail-under-qa-quality",
         type=float,
-        default=0.7,
+        default=3.5,
         help="Exit 1 if mean question_answering_quality score falls below "
-             "this (default: 0.7)",
+             "this. Scale: 1-5 (rating rubric, 5=best — confirmed via "
+             "Vertex's metrics-templates docs; NOT 0-1, unlike "
+             "groundedness). First real run scored 4.76/5. Default: 3.5.",
     )
     args = parser.parse_args()
     sys.exit(run_eval(args.fail_under_groundedness, args.fail_under_qa_quality))
