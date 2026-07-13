@@ -21,3 +21,10 @@ rag.log.*
 # reference/rag-gcp/known_issues.md ("CPU-only torch wheel install" /
 # index-persistence entries) for why a committed index is the wrong pattern.
 faiss_index/
+
+# Local-only retrieval eval script. Superseded in CI by ci/retrieval_eval.py
+# (run via the rag-gcp-eval-manual Cloud Build trigger — see
+# cloudbuild-eval.yaml). This folder stays on disk for local experimentation
+# but is no longer tracked in git, so ci/ is the single source of truth for
+# what actually gates anything.
+eval/
