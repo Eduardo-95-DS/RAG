@@ -5,10 +5,7 @@
 
 import streamlit as st
 from pathlib import Path
-import sys
 import time
-
-sys.path.append(str(Path(__file__).parent))
 
 from src.config.config import Config
 from src.document_ingestion.document_processor import DocumentProcessor

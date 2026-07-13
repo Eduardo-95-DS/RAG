@@ -21,6 +21,12 @@ RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/wh
 # from Vertex AI embeddings (text-embedding-005).
 COPY . .
 
+# Install the app itself in editable mode so "src.config", "src.node", etc.
+# resolve as real imports instead of relying on a sys.path.append hack in
+# streamlit_app.py. No-op on dependencies (already installed above); this
+# just registers src/ on the import path via pyproject.toml.
+RUN pip install --no-cache-dir --no-deps -e .
+
 # Cloud Run sets $PORT (defaults to 8080) and routes traffic to it.
 ENV PORT=8080
 EXPOSE 8080
