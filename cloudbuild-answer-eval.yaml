@@ -1,0 +1,49 @@
+# Manual-only answer-quality eval gate. Not wired to any push trigger — run
+# it on demand via:
+#   gcloud builds triggers run rag-gcp-answer-eval-manual --branch=rag-gcp --region=southamerica-east1
+#
+# Complements cloudbuild-eval.yaml (retrieval-only). This one runs the full
+# rewriter -> responder -> guardrail pipeline against a fixed question set
+# and scores the final answers with the Vertex AI Gen AI evaluation service
+# (groundedness, question_answering_quality). See ci/answer_quality_eval.py.
+#
+# Needs the GROQ_API_KEY secret (the app's own LLM, used to generate
+# answers) — via Cloud Build's availableSecrets/secretEnv, not Cloud Run's
+# --set-secrets flag (that syntax only applies to `gcloud run deploy`, not a
+# build step). rag-cloudbuild@ needs roles/secretmanager.secretAccessor on
+# the groq-api-key secret for this to resolve.
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/groq-api-key/versions/latest
+      env: GROQ_API_KEY
+
+steps:
+  # Pull the FAISS index from GCS, same as cloudbuild-eval.yaml.
+  - name: "gcr.io/cloud-builders/gsutil"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        mkdir -p faiss_index
+        gsutil -m cp -r "gs://edu-rag-nvidia-docs/faiss_index/*" faiss_index/
+
+  # Install deps (uv, same lockfile as the app) and run the live pipeline +
+  # Gen AI eval service scoring. GROQ_API_KEY comes from availableSecrets
+  # above via secretEnv below.
+  - name: "python:3.13-slim"
+    entrypoint: "bash"
+    secretEnv: ["GROQ_API_KEY"]
+    args:
+      - "-c"
+      - |
+        set -eu
+        apt-get update && apt-get install -y --no-install-recommends libgomp1
+        pip install --no-cache-dir uv
+        uv sync --locked --no-cache
+        uv run python ci/answer_quality_eval.py \
+          --fail-under-groundedness=0.7 \
+          --fail-under-qa-quality=0.7
+
+# No images built, no deploy — this pipeline only reports pass/fail.
+options:
+  logging: CLOUD_LOGGING_ONLY
