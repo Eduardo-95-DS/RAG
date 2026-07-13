@@ -9,14 +9,16 @@
 # embedding model, or reranker settings — see README "Retrieval Evaluation".
 steps:
   # Pull the FAISS index from GCS so eval runs against the same index
-  # Cloud Run actually serves, not a freshly-built one.
+  # Cloud Run actually serves, not a freshly-built one. mkdir first: gsutil's
+  # multi-source cp refuses to target a destination that doesn't exist yet
+  # (raises "Destination URL must name a directory" instead of creating one).
   - name: "gcr.io/cloud-builders/gsutil"
+    entrypoint: "bash"
     args:
-      - "-m"
-      - "cp"
-      - "-r"
-      - "gs://edu-rag-nvidia-docs/faiss_index"
-      - "faiss_index"
+      - "-c"
+      - |
+        mkdir -p faiss_index
+        gsutil -m cp -r "gs://edu-rag-nvidia-docs/faiss_index/*" faiss_index/
 
   # Install deps with uv (same lockfile as the app image — no version
   # drift between what CI evaluates and what Cloud Run runs) and run the
