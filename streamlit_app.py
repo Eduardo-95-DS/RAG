@@ -114,7 +114,7 @@ def main():
     if not st.session_state.initialized:
         st.info(
             "⏳ If this is the first visit in a while, initial setup can take "
-            "30-60 seconds while the app downloads its embedding model and builds "
+            "30-60 seconds while the app downloads its cross-encoder model and builds "
             "its search index. This only happens once per app restart, later "
             "questions will be fast."
         )

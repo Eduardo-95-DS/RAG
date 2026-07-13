@@ -19,7 +19,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# App code, including the committed faiss_index/ (bge-small-en-v1.5 embeddings)
+# App code. No index is committed; the FAISS index is built at startup
+# from Vertex AI embeddings (text-embedding-005).
 COPY . .
 
 # Cloud Run sets $PORT (defaults to 8080) and routes traffic to it.
