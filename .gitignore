@@ -15,3 +15,9 @@ groq_available_models.py
 # Logs
 rag.log
 rag.log.*
+
+# Local FAISS index (downloaded from GCS for eval/debugging on rag-gcp,
+# or built locally on other branches) — never committed, see
+# reference/rag-gcp/known_issues.md ("CPU-only torch wheel install" /
+# index-persistence entries) for why a committed index is the wrong pattern.
+faiss_index/
