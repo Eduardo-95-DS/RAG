@@ -11,6 +11,7 @@ from src.config.config import Config
 from src.document_ingestion.document_processor import DocumentProcessor
 from src.vectorstore.vectorstore import VectorStore
 from src.graph_builder.graph_builder import GraphBuilder
+from src.node.reactnode import RAGNodes
 from src.feedback.feedback_store import save_feedback
 from src.logging.rag_logger import get_logger
 
@@ -94,6 +95,47 @@ def initialize_rag():
     except Exception as e:
         st.error(f"Failed to initialize: {str(e)}")
         return None, 0
+
+
+def render_transparency_panel(res: dict):
+    """Show how the answer was produced: rewrite, retrieved chunks, grounding.
+
+    `res` is st.session_state.last_result. Guards the case where no chunks were
+    retrieved (unanswerable question, or the agent answered without retrieving).
+    """
+    docs = res.get('retrieved_docs') or []
+    with st.expander("🔎 How this answer was produced"):
+        st.markdown(f"**Original question:** {res.get('question', '')}")
+        rewritten = res.get('rewritten_query') or "(no rewrite)"
+        st.markdown(f"**Rewritten query:** {rewritten}")
+
+        if docs:
+            st.markdown(
+                f"**Retrieved {len(docs)} chunks** "
+                "(hybrid FAISS + BM25, cross-encoder reranked)"
+            )
+            for i, d in enumerate(docs, start=1):
+                title = d['content'][:80].replace("\n", " ").strip()
+                with st.expander(f"Chunk {i}: {title}…"):
+                    st.markdown(d['content'])
+                    meta_bits = []
+                    if d.get('source'):
+                        meta_bits.append(f"source: {d['source']}")
+                    if d.get('page') != '' and d.get('page') is not None:
+                        meta_bits.append(f"page: {d['page']}")
+                    if meta_bits:
+                        st.caption(" | ".join(meta_bits))
+        else:
+            st.markdown("**Retrieved chunks:** none")
+
+        st.markdown("---")
+        if res.get('grounded'):
+            st.markdown("✅ **Grounding check passed** — answer is supported by the retrieved passages.")
+        else:
+            st.markdown(
+                "⚠️ **Guardrail rejected the draft answer** — it wasn't grounded in the "
+                "retrieved passages, so a fallback message was returned instead."
+            )
 
 
 def main():
@@ -205,18 +247,34 @@ def main():
                         'answer': result['answer'],
                         'time': elapsed_time
                     })
+                    # Trim retrieved docs to what the transparency panel needs,
+                    # so we don't carry full LangChain Document objects in session
+                    # state. May be empty (e.g. unanswerable question, agent never
+                    # called the retriever) — the panel guards against that.
+                    retrieved = result.get('retrieved_docs') or []
+                    trimmed_docs = [
+                        {
+                            'content': d.page_content,
+                            'source': (d.metadata or {}).get('source', ''),
+                            'page': (d.metadata or {}).get('page', ''),
+                        }
+                        for d in retrieved
+                    ]
                     # Unique key per answer so the widget doesn't carry a stale
                     # selection over from a previous question.
                     st.session_state.last_result = {
                         'question': question_to_process,
                         'rewritten_query': result.get('rewritten_query', ''),
                         'answer': result['answer'],
+                        'retrieved_docs': trimmed_docs,
+                        'grounded': result['answer'] != RAGNodes.FALLBACK_ANSWER,
                     }
                     st.session_state.feedback_key = f"feedback_{len(st.session_state.history)}"
                     with answer_area.container():
                         st.markdown("### 💡 Answer")
                         st.success(result['answer'])
                         st.caption(f"⏱️ Response time: {elapsed_time:.2f} seconds")
+                        render_transparency_panel(st.session_state.last_result)
                 except Exception as e:
                     if "rate_limit" in str(e).lower():
                         answer_area.error("Too many requests. Please wait a moment and try again.")
