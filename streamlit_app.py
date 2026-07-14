@@ -104,8 +104,24 @@ def render_transparency_panel(res: dict):
     retrieved (unanswerable question, or the agent answered without retrieving).
     """
     docs = res.get('retrieved_docs') or []
+    route = res.get('route', 'retrieve')
+    route_labels = {
+        'retrieve': "📚 Retrieve — answered from the annual report",
+        'conversational': "💬 Conversational — answered directly, no document lookup",
+        'refuse': "🚫 Refused — off-topic or out-of-scope for this assistant",
+    }
     with st.expander("🔎 How this answer was produced"):
         st.markdown(f"**Original question:** {res.get('question', '')}")
+        st.markdown(f"**Route:** {route_labels.get(route, route)}")
+
+        if route != 'retrieve':
+            # Conversational / refuse: no rewrite, no retrieval, no grounding check.
+            st.markdown(
+                "This question skipped retrieval, so there are no source chunks or "
+                "grounding check for it."
+            )
+            return
+
         rewritten = res.get('rewritten_query') or "(no rewrite)"
         st.markdown(f"**Rewritten query:** {rewritten}")
 
@@ -265,6 +281,7 @@ def main():
                     st.session_state.last_result = {
                         'question': question_to_process,
                         'rewritten_query': result.get('rewritten_query', ''),
+                        'route': result.get('route', 'retrieve'),
                         'answer': result['answer'],
                         'retrieved_docs': trimmed_docs,
                         'grounded': result['answer'] != RAGNodes.FALLBACK_ANSWER,

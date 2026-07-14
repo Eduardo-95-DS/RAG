@@ -109,7 +109,7 @@ Two metrics, on two different scales (verified against Vertex's own metric docs 
 
 Not wired to push, same reasoning as the retrieval gate. Run manually after prompt, model, or guardrail changes.
 
-**Baseline (2026-07-13, first correctly-gated run after fixing the QA-quality scale bug below):** groundedness 0.96, question_answering_quality 4.68/5.
+**Baseline (2026-07-14, qwen/qwen3.6-27b):** groundedness 0.72, question_answering_quality 4.36/5. Both pass the gates (≥ 0.7 / ≥ 3.5), but groundedness dropped from the previous 0.96 (llama-4-scout, 2026-07-13) after the forced model migration — a real faithfulness regression, passing only by a 0.02 margin. Tracked in `known_issues.md`.
 
 Requires `GROQ_API_KEY` (Secret Manager, `rag-cloudbuild@` needs `roles/secretmanager.secretAccessor` on it) to generate answers, and the Generative Language API (`generativelanguage.googleapis.com`) enabled on the project for the judge model call — this was the actual blocker the first time this was set up, not an IAM role gap.
 
