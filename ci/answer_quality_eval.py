@@ -40,12 +40,15 @@ generate answers — separate from the Vertex judge model used to score them).
 """
 
 import argparse
+import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
 import pandas as pd
+from groq import RateLimitError
 from vertexai.evaluation import EvalTask
 
 from src.config.config import Config
@@ -91,6 +94,43 @@ QUESTIONS = [
 ]
 
 
+# Groq free/on-demand tier caps qwen3.6-27b at 8000 TPM (tokens per minute).
+# The eval fires the full multi-call graph per question, so back-to-back runs
+# blow the rolling window (a real run died at question ~12 with a 429). Two
+# guards keep it under the cap with minimal added time:
+#   1. A small fixed sleep BETWEEN questions to smooth the token rate.
+#   2. A 429-aware retry that waits exactly the delay Groq asks for (parsed from
+#      the error message, e.g. "try again in 8.25s") rather than a blanket sleep.
+# The retry only costs time on the occasional question that still clips the
+# window, so the common-case overhead is just (N-1) * INTER_QUESTION_DELAY.
+INTER_QUESTION_DELAY = 4.0   # seconds between questions
+MAX_RATE_LIMIT_RETRIES = 5
+
+
+def _extract_retry_after(err: RateLimitError, default: float = 10.0) -> float:
+    """Pull the 'try again in Xs' hint from a Groq 429, else fall back."""
+    msg = str(getattr(err, "message", "") or err)
+    m = re.search(r"try again in ([\d.]+)\s*s", msg, re.IGNORECASE)
+    if m:
+        # Add a small cushion so we're safely past the window edge.
+        return float(m.group(1)) + 1.0
+    return default
+
+
+def _run_with_rate_limit_retry(graph, question: str) -> dict:
+    """graph.run(question), retrying on Groq 429s with the server-suggested wait."""
+    for attempt in range(1, MAX_RATE_LIMIT_RETRIES + 1):
+        try:
+            return graph.run(question)
+        except RateLimitError as e:
+            if attempt == MAX_RATE_LIMIT_RETRIES:
+                raise
+            wait = _extract_retry_after(e)
+            print(f"    rate limited (attempt {attempt}/{MAX_RATE_LIMIT_RETRIES}); "
+                  f"waiting {wait:.1f}s then retrying...")
+            time.sleep(wait)
+
+
 def build_eval_dataset() -> pd.DataFrame:
     """
     Run the real rewriter -> responder -> guardrail graph for every question
@@ -112,8 +152,8 @@ def build_eval_dataset() -> pd.DataFrame:
     prompts = []
     responses = []
 
-    for question in QUESTIONS:
-        result = graph.run(question)
+    for i, question in enumerate(QUESTIONS):
+        result = _run_with_rate_limit_retry(graph, question)
         answer = result.get("answer", "")
         retrieved_docs = result.get("retrieved_docs", [])
         context = "\n\n".join(d.page_content for d in retrieved_docs[:8])
@@ -124,6 +164,10 @@ def build_eval_dataset() -> pd.DataFrame:
 
         print(f"  [{len(prompts)}/{len(QUESTIONS)}] '{question[:60]}' -> "
               f"'{answer[:80]}'")
+
+        # Space out questions to stay under the TPM cap (skip after the last).
+        if i < len(QUESTIONS) - 1:
+            time.sleep(INTER_QUESTION_DELAY)
 
     return pd.DataFrame({"prompt": prompts, "response": responses})
 
