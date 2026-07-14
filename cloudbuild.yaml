@@ -28,7 +28,14 @@ steps:
       - "--image=southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:$SHORT_SHA"
       - "--region=southamerica-east1"
       - "--service-account=rag-cloudrun@$PROJECT_ID.iam.gserviceaccount.com"
-      - "--set-secrets=GROQ_API_KEY=groq-api-key:latest"
+      # LangSmith tracing: LangChain auto-emits traces when these env vars are
+      # present (langsmith ships transitively with langchain — no import needed).
+      # --set-secrets replaces the whole secret set when passed, so GROQ stays on
+      # this same line. If the LangSmith account is EU-region, also add
+      # LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com to the env-vars
+      # below, or auth silently fails.
+      - "--set-secrets=GROQ_API_KEY=groq-api-key:latest,LANGSMITH_API_KEY=langsmith-api-key:latest"
+      - "--set-env-vars=LANGSMITH_TRACING=true,LANGSMITH_PROJECT=rag-gcp"
       - "--memory=2Gi"
       - "--cpu=2"
       - "--allow-unauthenticated"
