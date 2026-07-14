@@ -30,7 +30,7 @@ Answer
 
 | Component | Choice |
 |---|---|
-| LLM | Groq — `meta-llama/llama-4-scout-17b-16e-instruct` |
+| LLM | Groq — `qwen/qwen3.6-27b` (primary), `openai/gpt-oss-20b` (fallback) |
 | Embeddings | Vertex AI `text-embedding-005` (via `langchain-google-vertexai`) |
 | Vector store | FAISS (CPU), persisted to GCS across Cloud Run cold starts |
 | Lexical search | BM25 (`rank_bm25`) |
@@ -61,7 +61,10 @@ All tuneable parameters are in `src/config/config.py`:
 |---|---|---|
 | `CHUNK_SIZE` | 500 | Characters per chunk |
 | `CHUNK_OVERLAP` | 50 | 10% of chunk size — prevents boundary meaning loss |
-| `LLM_MODEL` | llama-4-scout | Groq model string |
+| `LLM_MODEL` | qwen/qwen3.6-27b | Primary Groq model |
+| `FALLBACK_MODEL` | openai/gpt-oss-20b | Fallback on primary failure (rewriter, ground check) |
+| `LLM_MAX_RETRIES` | 3 | Retries per model on transient errors |
+| `REASONING_FORMAT` | hidden | Suppress reasoning tokens from output (qwen3.6 is a reasoning model) |
 
 ## Retrieval Evaluation
 

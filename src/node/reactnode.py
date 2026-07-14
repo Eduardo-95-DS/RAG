@@ -23,17 +23,30 @@ class RAGNodes:
         "for that question."
     )
 
+    # Positive polarity (YES = grounded/good). The previous inverted phrasing
+    # (YES = unsupported) is a classic footgun: models frequently answer "YES"
+    # meaning "yes, it's grounded", the opposite of intended, causing correct
+    # answers to be rejected. Kept simple and one-word so parsing is unambiguous.
     GROUND_CHECK_PROMPT = (
-        "You are a grounding checker. Given retrieved document passages and an AI-generated answer, "
-        "respond with only YES or NO.\n"
-        "YES = the answer makes claims not supported by the provided passages.\n"
-        "NO = the answer is fully supported by the passages.\n"
-        "Output only YES or NO."
+        "You are a grounding checker. Given retrieved document passages and an "
+        "AI-generated answer, decide whether the answer is fully supported by the "
+        "passages.\n"
+        "Answer YES if every claim in the answer is supported by the passages.\n"
+        "Answer NO if the answer contains any claim not supported by the passages.\n"
+        "Output only the single word YES or NO."
     )
 
     def __init__(self, retriever, llm):
         self.retriever = retriever
+        # Plain primary (with retries): used by the ReAct agent, which calls
+        # bind_tools() on it. Must NOT be a fallback-wrapped runnable.
         self.llm = llm
+        # Fallback-wrapped (primary -> smaller model) for the plain .invoke()
+        # sites (rewriter, ground check), where bind_tools is never called so a
+        # RunnableWithFallbacks is fine. Built here rather than passed in so the
+        # GraphBuilder/streamlit call signature is unchanged.
+        from src.config.config import Config
+        self.llm_fallback = Config.get_llm_with_fallback()
         self._agent = None
         self._last_retrieved: List[Document] = []
 
@@ -72,7 +85,9 @@ class RAGNodes:
             SystemMessage(content=self.REWRITE_PROMPT),
             HumanMessage(content=user_content),
         ]
-        response = self.llm.invoke(messages)
+        # Fallback-wrapped: a transient primary failure here retries, then falls
+        # back to the smaller model rather than erroring at the user.
+        response = self.llm_fallback.invoke(messages)
         rewritten = response.content.strip()
         log.info("[REWRITE] original='%s' | rewritten='%s'", state.question, rewritten)
         return RAGState(
@@ -164,16 +179,23 @@ class RAGNodes:
         user_msg = (
             f"Passages:\n{context}\n\n"
             f"Answer:\n{state.answer}\n\n"
-            "Does the answer make claims not supported by the passages? YES or NO."
+            "Is the answer fully supported by the passages? YES or NO."
         )
-        response = self.llm.invoke([
+        # Fallback-wrapped: same rationale as the rewriter.
+        response = self.llm_fallback.invoke([
             SystemMessage(content=self.GROUND_CHECK_PROMPT),
             HumanMessage(content=user_msg),
         ])
         verdict = response.content.strip().upper()
-        log.info("[GROUND] verdict='%s' | answer='%s...'", verdict, state.answer[:80])
+        # Strict parse: grounded only if the verdict *starts with* YES. A bare
+        # substring match ("YES" in verdict) misfires on any stray "yes"; and
+        # anything ambiguous or empty should fail closed to the fallback. So we
+        # keep the original answer only on an explicit YES, else use the fallback.
+        grounded = verdict.startswith("YES")
+        log.info("[GROUND] verdict='%s' grounded=%s | answer='%s...'",
+                 verdict, grounded, state.answer[:80])
 
-        final_answer = self.FALLBACK_ANSWER if "YES" in verdict else state.answer
+        final_answer = state.answer if grounded else self.FALLBACK_ANSWER
         return RAGState(
             question=state.question,
             rewritten_query=state.rewritten_query,
