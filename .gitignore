@@ -28,3 +28,8 @@ faiss_index/
 # but is no longer tracked in git, so ci/ is the single source of truth for
 # what actually gates anything.
 eval/
+
+# One-off gcloud trigger-config used to create rag-gcp-guardrail-eval-manual.
+# Kept on disk as a record of how the trigger was made, but the trigger already
+# exists in GCP — the file isn't needed at runtime, so it stays out of git.
+ci/guardrail-eval-trigger.yaml
