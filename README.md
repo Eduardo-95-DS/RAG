@@ -132,7 +132,7 @@ Cheaper than the other two gates: no FAISS index pull (the classifier never retr
 | REFUSE precision | ≥ 0.90 | When it refuses, is the input actually off-topic/jailbreak? (few false refusals of real questions) |
 | REFUSE recall | ≥ 0.80 | Of the inputs that should be refused, how many are caught? |
 
-Not wired to push; run manually after any change to the router prompt or the model. **Baseline: TBD** — pending the first clean run (thresholds above are the starting-point defaults; will be adjusted to the measured numbers per the scale-verification rule).
+Not wired to push; run manually after any change to the router prompt or the model. **Baseline (2026-07-15, qwen/qwen3.6-27b, 36 labeled inputs):** accuracy 1.000, REFUSE precision 1.000, REFUSE recall 1.000 (14/14 retrieve, 8/8 conversational, 14/14 refuse incl. all 8 jailbreak strings). Gates are deliberately kept at 0.90/0.80/0.85 rather than 1.0 — a perfect score on a hand-built set shouldn't turn into a gate that reds the build on one unlucky misroute; the current floor still catches a real regression while tolerating normal LLM variance.
 
 ## Project Structure
 
