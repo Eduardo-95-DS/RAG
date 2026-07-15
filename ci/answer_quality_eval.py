@@ -24,10 +24,17 @@ metric docs after the first real run, don't assume both are 0-1:
                                than groundedness; ground_check never checks
                                this at all. First real run: 4.76/5 mean.
 
-Deliberately NOT using question_answering_correctness (would require a
-golden reference answer per question — a maintenance burden not taken on
-for this first pass). Revisit if false-negative groundedness misses become
-a problem in practice.
+Reference-based correctness (item 6): golden answers for all 25 questions
+are sourced from the actual PDF (see QA_PAIRS). Vertex's built-in
+question_answering_correctness was REMOVED from the Gen AI eval service
+(confirmed 2026-07-15: "Metric name: ... is not supported"), and the
+surviving reference-based built-ins (BLEU/ROUGE/exact_match) measure lexical
+overlap, not factual correctness ("$130.5 billion" vs golden "$130,497
+million" would score as wrong). So correctness is computed LOCALLY by
+key_figure_correctness(): fraction of answers containing an accepted
+PDF-verified figure/term for their question — deterministic, no API call,
+0-1 scale, and robust to phrasing. Analogous to unit-tests-as-eval for
+answers that have exact expected values.
 
 Usage
 -----
@@ -129,6 +136,62 @@ QA_PAIRS = [
 
 QUESTIONS = [q for q, _ in QA_PAIRS]
 REFERENCE_ANSWERS = [ref for _, ref in QA_PAIRS]
+
+# Deterministic key-figure correctness targets, aligned index-for-index with
+# QA_PAIRS. An answer is "correct" if it contains ANY accepted form for its
+# question (case-insensitive substring). All figures are PDF-verified (see the
+# QA_PAIRS provenance note). This replaces Vertex's removed
+# question_answering_correctness with an objective, API-free, 0-1-scale check —
+# analogous to unit-tests-as-eval for answers that have exact expected values.
+# The financial 10 (indices 0-9) are the ones the CI gate actually runs under
+# --limit=10; the rest use key terms and are here for completeness / local runs.
+KEY_FIGURES = [
+    ["130,497", "130.5"],                    # 0 total revenue
+    ["72,880", "72.9"],                      # 1 net income
+    ["2.94"],                                # 2 diluted EPS
+    ["3,491"],                               # 3 SG&A
+    ["11,146", "11.1"],                      # 4 income tax expense
+    ["64,089", "64.1"],                      # 5 operating cash flow
+    ["43,210", "43.2"],                      # 6 cash + marketable securities
+    ["115,186", "115.2"],                    # 7 data center revenue
+    ["11,350", "11.4"],                      # 8 gaming revenue
+    ["1,878"],                               # 9 professional visualization revenue
+    ["1,694"],                               # 10 automotive revenue
+    ["82,875"],                              # 11 compute & networking op income
+    ["blackwell"],                           # 12
+    ["hopper", "h100", "h200"],              # 13
+    ["nvlink"],                              # 14
+    ["cuda"],                                # 15
+    ["drive", "orin", "jetson"],             # 16
+    ["accelerated computing"],               # 17
+    ["amd", "intel", "competition"],         # 18
+    ["export", "china", "license"],          # 19
+    ["tsmc", "taiwan semiconductor"],        # 20
+    ["36,000"],                              # 21 employees
+    ["34.0", "34,000", "310 million"],       # 22 buybacks
+    ["12,914", "12.9"],                      # 23 R&D
+    ["53%", "47%", "outside the united states", "international"],  # 24 geographic
+]
+
+
+def key_figure_correctness(responses, limit: int = 0):
+    """Fraction of responses containing an accepted key figure for their question.
+
+    Deterministic, no API call, 0-1 scale (mean of per-answer 0/1). `responses`
+    is aligned to QUESTIONS[:limit]. Returns (mean, per_item_detail).
+    """
+    n = len(responses)
+    targets = KEY_FIGURES[:n]
+    detail = []
+    hits = 0
+    for i, resp in enumerate(responses):
+        text = (resp or "").lower()
+        accepted = [t.lower() for t in targets[i]]
+        ok = any(a in text for a in accepted)
+        hits += int(ok)
+        detail.append((i, ok, targets[i]))
+    mean = hits / n if n else 0.0
+    return mean, detail
 
 
 # Groq free/on-demand tier caps qwen3.6-27b at 8000 TPM (tokens per minute).
@@ -240,12 +303,15 @@ def run_eval(fail_under_groundedness: float, fail_under_qa_quality: float,
 
     # question_answering_correctness is reference-based (uses the `reference`
     # column of golden answers). groundedness + qa_quality are reference-free.
+    # NOTE: Vertex's built-in question_answering_correctness was REMOVED from the
+    # Gen AI eval service (confirmed 2026-07-15: "Metric name: ... is not
+    # supported"). Reference-based correctness is now computed locally by
+    # key_figure_correctness() below — deterministic, no API call, 0-1 scale.
     eval_task = EvalTask(
         dataset=dataset,
         metrics=[
             "groundedness",
             "question_answering_quality",
-            "question_answering_correctness",
         ],
         experiment=EXPERIMENT_NAME,
     )
@@ -255,7 +321,13 @@ def run_eval(fail_under_groundedness: float, fail_under_qa_quality: float,
     # Vertex's summary_metrics keys look like "<metric>/mean" — pull those.
     groundedness_mean = summary.get("groundedness/mean", 0.0)
     qa_quality_mean = summary.get("question_answering_quality/mean", 0.0)
-    qa_correctness_mean = summary.get("question_answering_correctness/mean", 0.0)
+
+    # Deterministic reference-based correctness on the same rows: fraction of
+    # answers containing an accepted key figure for their question. Uses the
+    # dataset's `response` column (the final, post-guardrail answers).
+    qa_correctness_mean, correctness_detail = key_figure_correctness(
+        dataset["response"].tolist(), limit=limit
+    )
 
     print()
     print("=" * 60)
@@ -263,13 +335,17 @@ def run_eval(fail_under_groundedness: float, fail_under_qa_quality: float,
           f"(gate >= {fail_under_groundedness:.2f})")
     print(f"Question answering quality (mean): {qa_quality_mean:.2f}  "
           f"(gate >= {fail_under_qa_quality:.2f})")
-    # SCALE UNVERIFIED for correctness — printed with more precision so the first
-    # run reveals whether it's 0-1 or 1-5. The gate is DISABLED by default
-    # (--fail-under-qa-correctness=0) until the scale is confirmed; see the flag
-    # help and known_issues.md's scale-verification rule.
-    print(f"Question answering correctness   : {qa_correctness_mean:.3f}  "
+    # Key-figure correctness: 0-1 scale (fraction of answers containing an
+    # accepted PDF-verified figure/term for their question). Deterministic, no
+    # API call — replaces Vertex's removed question_answering_correctness.
+    print(f"Key-figure correctness (0-1)     : {qa_correctness_mean:.3f}  "
           f"(gate >= {fail_under_qa_correctness:.2f}"
           f"{' — DISABLED' if fail_under_qa_correctness <= 0 else ''})")
+    misses = [(i, tgt) for (i, ok, tgt) in correctness_detail if not ok]
+    if misses:
+        print(f"  correctness misses ({len(misses)}):")
+        for i, tgt in misses:
+            print(f"    Q{i+1} '{QUESTIONS[i][:50]}' — expected one of {tgt}")
     print()
 
     failed = []
@@ -315,14 +391,12 @@ if __name__ == "__main__":
         "--fail-under-qa-correctness",
         type=float,
         default=0.0,
-        help="Exit 1 if mean question_answering_correctness (reference-based, "
-             "uses the golden answers) falls below this. SCALE UNVERIFIED — this "
-             "metric is no longer in Vertex's current metrics-templates doc, so "
-             "the first run must reveal whether it's 0-1 or 1-5 before a gate is "
-             "meaningful. DEFAULT 0.0 = gate DISABLED (measure-only); set to a "
-             "matching-scale value once the scale is confirmed. Per the project's "
-             "scale-verification rule, a passing number is not proof the gate is "
-             "right until the scale is checked.",
+        help="Exit 1 if key-figure correctness falls below this. Scale: 0-1 "
+             "(fraction of answers containing an accepted PDF-verified figure/"
+             "term for their question — deterministic, no API call; replaces "
+             "Vertex's removed question_answering_correctness). Default 0.0 = "
+             "gate reported but not enforced on the first run; the CI yaml sets "
+             "an explicit value (e.g. 0.8) once the baseline is known.",
     )
     parser.add_argument(
         "--limit",
