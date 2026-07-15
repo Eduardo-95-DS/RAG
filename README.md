@@ -8,16 +8,19 @@ A production-grade RAG system for question answering over the NVIDIA FY2025 Annu
 User question
     │
     ▼
-[rewriter]  — resolves conversational references, reformulates for retrieval
+[rewriter]  — routes the question AND (for RETRIEVE) reformulates it for search
     │
-    ▼
-[responder] — ReAct agent with hybrid retriever tool (FAISS + BM25 + cross-encoder)
-    │
-    ▼
-[guardrail] — LLM-as-judge grounding check; returns fallback if answer is unsupported
-    │
-    ▼
-Answer
+    ├── RETRIEVE ──▶ [responder] — ReAct agent w/ hybrid retriever (FAISS + BM25 + cross-encoder)
+    │                     │
+    │                     ▼
+    │                [guardrail] — LLM-as-judge grounding check; fallback if unsupported
+    │                     │
+    ├── CONVERSATIONAL ─▶ [direct_answer] — plain reply for greetings / history, no retrieval
+    │                     │
+    ├── REFUSE ─────────▶ [refuse] — fixed refusal for off-topic / jailbreak input
+    │                     │
+    ▼                     ▼
+                       Answer
 ```
 
 **Retrieval pipeline inside [responder]:**
@@ -112,6 +115,24 @@ Not wired to push, same reasoning as the retrieval gate. Run manually after prom
 **Baseline (2026-07-14, qwen/qwen3.6-27b):** groundedness 0.72, question_answering_quality 4.36/5. Both pass the gates (≥ 0.7 / ≥ 3.5), but groundedness dropped from the previous 0.96 (llama-4-scout, 2026-07-13) after the forced model migration — a real faithfulness regression, passing only by a 0.02 margin. Tracked in `known_issues.md`.
 
 Requires `GROQ_API_KEY` (Secret Manager, `rag-cloudbuild@` needs `roles/secretmanager.secretAccessor` on it) to generate answers, and the Generative Language API (`generativelanguage.googleapis.com`) enabled on the project for the judge model call — this was the actual blocker the first time this was set up, not an IAM role gap.
+
+## Guardrail / Routing Evaluation
+
+The retrieval and answer gates say nothing about the *input router* (item 4: the classifier folded into the rewriter that sends each question to RETRIEVE, CONVERSATIONAL, or REFUSE). `ci/guardrail_eval.py`, run via the `rag-gcp-guardrail-eval-manual` trigger, measures it: it runs the rewriter node over a labeled input set (on-topic questions, greetings/meta, off-topic + jailbreak strings) and scores predicted vs expected routes.
+
+```bash
+gcloud builds triggers run rag-gcp-guardrail-eval-manual --branch=rag-gcp --region=southamerica-east1
+```
+
+Cheaper than the other two gates: no FAISS index pull (the classifier never retrieves) and no Vertex judge model (scoring is plain TP/FP/FN arithmetic). Only needs `GROQ_API_KEY`. REFUSE is the positive class (catching jailbreaks is the safety-critical job); the gate checks REFUSE precision/recall plus overall accuracy, and a full confusion matrix is printed.
+
+| Metric | Gate | What it checks |
+|---|---|---|
+| accuracy (all routes) | ≥ 0.85 | Overall fraction of inputs routed correctly |
+| REFUSE precision | ≥ 0.90 | When it refuses, is the input actually off-topic/jailbreak? (few false refusals of real questions) |
+| REFUSE recall | ≥ 0.80 | Of the inputs that should be refused, how many are caught? |
+
+Not wired to push; run manually after any change to the router prompt or the model. **Baseline: TBD** — pending the first clean run (thresholds above are the starting-point defaults; will be adjusted to the measured numbers per the scale-verification rule).
 
 ## Project Structure
 

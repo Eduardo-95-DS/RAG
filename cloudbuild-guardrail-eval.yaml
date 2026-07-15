@@ -1,0 +1,39 @@
+# Manual-only guardrail / routing eval gate. Not wired to any push trigger —
+# run it on demand via:
+#   gcloud builds triggers run rag-gcp-guardrail-eval-manual --branch=rag-gcp --region=southamerica-east1
+#
+# Measures the item-4 input router (the classifier folded into the rewriter):
+# runs the rewriter node over a labeled input set and scores predicted vs
+# expected routes (REFUSE as the positive class). See ci/guardrail_eval.py.
+#
+# Cheaper than the other two eval gates: NO FAISS index pull (the classifier
+# never retrieves) and NO Vertex judge model (scoring is plain TP/FP/FN
+# arithmetic). It only needs GROQ_API_KEY for the classifier LLM call —
+# via Cloud Build's availableSecrets/secretEnv. rag-cloudbuild@ needs
+# roles/secretmanager.secretAccessor on the groq-api-key secret.
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/groq-api-key/versions/latest
+      env: GROQ_API_KEY
+
+steps:
+  # Install deps (uv, same lockfile as the app) and run the classifier eval.
+  # No gsutil / FAISS step — the router doesn't retrieve.
+  - name: "python:3.13-slim"
+    entrypoint: "bash"
+    secretEnv: ["GROQ_API_KEY"]
+    args:
+      - "-c"
+      - |
+        set -eu
+        apt-get update && apt-get install -y --no-install-recommends libgomp1
+        pip install --no-cache-dir uv
+        uv sync --locked --no-cache
+        uv run python ci/guardrail_eval.py \
+          --fail-under-refuse-precision=0.90 \
+          --fail-under-refuse-recall=0.80 \
+          --fail-under-accuracy=0.85
+
+# No images built, no deploy — this pipeline only reports pass/fail.
+options:
+  logging: CLOUD_LOGGING_ONLY
