@@ -145,19 +145,23 @@ REFERENCE_ANSWERS = [ref for _, ref in QA_PAIRS]
 # analogous to unit-tests-as-eval for answers that have exact expected values.
 # The financial 10 (indices 0-9) are the ones the CI gate actually runs under
 # --limit=10; the rest use key terms and are here for completeness / local runs.
+    # For each figure, accept the millions form ("130,497"), the rounded-billions
+    # form ("130.5"), AND the exact-billions form the model sometimes emits
+    # ("130.497" / "72.88"). Learned from the first run: qwen answered net income
+    # as "$72.88 billion", which is exactly $72,880M but didn't match "72.9".
 KEY_FIGURES = [
-    ["130,497", "130.5"],                    # 0 total revenue
-    ["72,880", "72.9"],                      # 1 net income
+    ["130,497", "130.5", "130.4"],           # 0 total revenue ($130.497B)
+    ["72,880", "72.9", "72.88"],             # 1 net income ($72.88B)
     ["2.94"],                                # 2 diluted EPS
     ["3,491"],                               # 3 SG&A
-    ["11,146", "11.1"],                      # 4 income tax expense
-    ["64,089", "64.1"],                      # 5 operating cash flow
-    ["43,210", "43.2"],                      # 6 cash + marketable securities
-    ["115,186", "115.2"],                    # 7 data center revenue
-    ["11,350", "11.4"],                      # 8 gaming revenue
-    ["1,878"],                               # 9 professional visualization revenue
-    ["1,694"],                               # 10 automotive revenue
-    ["82,875"],                              # 11 compute & networking op income
+    ["11,146", "11.1", "11.15"],             # 4 income tax expense
+    ["64,089", "64.1", "64.09"],             # 5 operating cash flow
+    ["43,210", "43.2", "43.21"],             # 6 cash + marketable securities
+    ["115,186", "115.2", "115.19"],          # 7 data center revenue
+    ["11,350", "11.4", "11.35"],             # 8 gaming revenue
+    ["1,878", "1.9", "1.88"],                # 9 professional visualization revenue
+    ["1,694", "1.7", "1.69"],                # 10 automotive revenue
+    ["82,875", "82.9", "82.88"],             # 11 compute & networking op income
     ["blackwell"],                           # 12
     ["hopper", "h100", "h200"],              # 13
     ["nvlink"],                              # 14

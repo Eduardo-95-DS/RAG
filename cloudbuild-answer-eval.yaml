@@ -43,7 +43,8 @@ steps:
         uv run python ci/answer_quality_eval.py \
           --limit=10 \
           --fail-under-groundedness=0.7 \
-          --fail-under-qa-quality=3.5
+          --fail-under-qa-quality=3.5 \
+          --fail-under-qa-correctness=0.8
         # --limit=10 is deliberate and permanent (not a temporary workaround):
         # under qwen3.6-27b's 8000 TPM free-tier cap, the full 25-question run
         # can't complete (dies ~18/25 firing the multi-call graph; see

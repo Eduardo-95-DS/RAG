@@ -103,16 +103,17 @@ gcloud builds describe <build-id> --region=southamerica-east1 --format="value(st
 gcloud builds log <build-id> --region=southamerica-east1
 ```
 
-Two metrics, on two different scales (verified against Vertex's own metric docs — don't assume both are 0-1):
+Three metrics (two Vertex LLM-judge + one local deterministic):
 
 | Metric | Scale | Gate | What it checks |
 |---|---|---|---|
 | `groundedness` | 0-1 (binary per example, mean = fraction grounded) | ≥ 0.7 | Is the answer supported by retrieved context? Independent check of what `ground_check` already tries to enforce, scored by a separate judge model instead of the app's own Groq call. |
 | `question_answering_quality` | 1-5 (rating rubric, 5 = best) | ≥ 3.5 | Is this a good, well-formed answer overall? Broader than groundedness — `ground_check` never checks this. |
+| key-figure correctness | 0-1 (fraction of answers containing an accepted PDF-verified figure) | ≥ 0.8 | Reference-based: does the answer state the correct number? Computed locally (no API) against golden answers. Replaced Vertex's `question_answering_correctness`, which was removed from the service (item 6). |
 
-Not wired to push, same reasoning as the retrieval gate. Run manually after prompt, model, or guardrail changes.
+Not wired to push, same reasoning as the retrieval gate. Run manually after prompt, model, or guardrail changes. **Runs `--limit=10` permanently** (the quantitative financial questions) — the full 25-question run can't complete under qwen3.6's 8000 TPM cap; see `known_issues.md`.
 
-**Baseline (2026-07-14, qwen/qwen3.6-27b):** groundedness 0.72, question_answering_quality 4.36/5. Both pass the gates (≥ 0.7 / ≥ 3.5), but groundedness dropped from the previous 0.96 (llama-4-scout, 2026-07-13) after the forced model migration — a real faithfulness regression, passing only by a 0.02 margin. Tracked in `known_issues.md`.
+**Baseline (2026-07-15, qwen/qwen3.6-27b, 10-financial subset):** groundedness 0.90, question_answering_quality 4.60/5, key-figure correctness 0.80-0.90 (9/10 answers carry the right figure; the occasional miss is the guardrail intermittently over-rejecting a financial question to the fallback, not a wrong number). Note: on this financial subset groundedness is 0.90, well above the 0.72 seen on the full 25 — the earlier low figure was concentrated in the open-ended qualitative questions, where the model elaborates beyond the passages.
 
 Requires `GROQ_API_KEY` (Secret Manager, `rag-cloudbuild@` needs `roles/secretmanager.secretAccessor` on it) to generate answers, and the Generative Language API (`generativelanguage.googleapis.com`) enabled on the project for the judge model call — this was the actual blocker the first time this was set up, not an IAM role gap.
 
