@@ -42,13 +42,13 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "rank-bm25==0.2.2",
     "requests>=2.32.4",
-    # Cross-encoder reranker only (embeddings use Vertex AI, see above) —
-    # still needed for CrossEncoderReranker in vectorstore.py. This is the
-    # only reason torch is a dependency at all; see [tool.uv.sources] below
-    # for why it's pinned to the CPU-only build.
-    "sentence-transformers>=5.5.1",
+    # Cross-encoder reranker (item 7): FlashRank runs a quantized ONNX
+    # cross-encoder via onnxruntime — no torch, no sentence-transformers.
+    # See CrossEncoderReranker in vectorstore.py. This replaced
+    # sentence-transformers + torch, which is why the CPU-torch override
+    # block (formerly below) is gone.
+    "flashrank>=0.2.10",
     "streamlit>=1.48.1",
-    "torch>=2.12.0",
 ]
 
 # The app imports its own code as "src.config", "src.node", etc. (not
@@ -60,20 +60,7 @@ packages = ["src", "src.config", "src.document_ingestion", "src.feedback",
             "src.vectorstore"]
 package-dir = {"" = "."}
 
-# Force CPU-only torch on every platform. Without this, uv's default
-# resolution pulls the full CUDA build on Linux (confirmed via uv.lock:
-# torch depends on cuda-bindings/cuda-toolkit on sys_platform == 'linux'),
-# which is ~1GB of GPU libraries Cloud Run can't use (no GPU). This mirrors
-# the pip --extra-index-url https://download.pytorch.org/whl/cpu flag the
-# Dockerfile used before switching to uv — see known_issues.md ("CPU-only
-# torch wheel install") for the history (a transient TLS handshake failure
-# against this index blocked it for a while; confirmed working 2026-07-13).
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
+# NOTE (item 7, 2026-07-15): the CPU-only torch override block that used to
+# live here ([tool.uv.sources] + [tool.uv.index] pytorch-cpu) was removed with
+# torch itself. The reranker now runs on FlashRank/onnxruntime, so torch is no
+# longer a dependency and the CUDA-vs-CPU resolution problem it solved is moot.

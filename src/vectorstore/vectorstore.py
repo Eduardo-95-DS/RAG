@@ -1,11 +1,12 @@
 """Vector store module for document embedding and retrieval"""
+import os
 from pathlib import Path
 from typing import List
 from langchain_community.vectorstores import FAISS
 from langchain_google_vertexai import VertexAIEmbeddings
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder
+from flashrank import Ranker, RerankRequest
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
 
@@ -149,26 +150,50 @@ class CrossEncoderReranker:
     significantly more accurate for ranking, which is why cross-encoders
     are used as a second-stage reranker rather than a first-stage retriever.
 
-    Model: cross-encoder/ms-marco-MiniLM-L-6-v2
-      - Trained on MS MARCO passage ranking (150M query-passage pairs).
-      - ~80 MB, runs on CPU, no API call required.
-      - Suitable for Streamlit Cloud's free tier environment.
+    Runtime: FlashRank (item 7, 2026-07-15) — a quantized ONNX cross-encoder,
+    replacing the previous sentence-transformers CrossEncoder. This removes
+    torch and sentence-transformers from the image entirely (onnxruntime is
+    far smaller), shrinking the container and cold start.
+
+    Model: ms-marco-MiniLM-L-12-v2
+      - The MiniLM cross-encoder FlashRank ships (its model_file_map has no
+        L-6-v2, the sentence-transformers model this branch used before — so
+        this is a deliberate UPGRADE to the stronger 12-layer variant, not a
+        like-for-like swap; retrieval eval was re-measured after the change).
+      - Quantized ONNX (~34 MB), CPU, no API call, no torch.
+
+    CRITICAL: model_name must be passed explicitly. Ranker() with no args
+    defaults to ms-marco-TinyBERT-L-2-v2, a much weaker model.
     """
 
-    MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    MODEL = "ms-marco-MiniLM-L-12-v2"
 
-    def __init__(self, top_k: int = 5):
-        self._model = CrossEncoder(self.MODEL)
+    # Cache dir resolution order: explicit arg > FLASHRANK_CACHE_DIR env >
+    # a stable in-image default (/app/.flashrank_cache). The Docker image bakes
+    # the model to the default path at build time so cold starts don't
+    # re-download it. Local runs / CI set FLASHRANK_CACHE_DIR (or pass cache_dir)
+    # to a writable path, since /app isn't writable off-container.
+    DEFAULT_CACHE_DIR = "/app/.flashrank_cache"
+
+    def __init__(self, top_k: int = 5, cache_dir: str | None = None):
+        cache_dir = cache_dir or os.getenv("FLASHRANK_CACHE_DIR", self.DEFAULT_CACHE_DIR)
+        # Explicit model_name — see CRITICAL note above.
+        self._ranker = Ranker(model_name=self.MODEL, cache_dir=cache_dir)
         self.top_k = top_k
 
     def rerank(self, query: str, docs: List[Document]) -> List[Document]:
         """Score every (query, doc) pair and return the top_k highest-scoring docs."""
         if not docs:
             return docs
-        pairs = [(query, doc.page_content) for doc in docs]
-        scores = self._model.predict(pairs)
-        ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
-        return [doc for _, doc in ranked[: self.top_k]]
+        # Carry the original index in each passage so we can map FlashRank's
+        # score-sorted output back to the original Document objects (FlashRank
+        # returns dicts, not Documents).
+        passages = [
+            {"id": i, "text": doc.page_content}
+            for i, doc in enumerate(docs)
+        ]
+        ranked = self._ranker.rerank(RerankRequest(query=query, passages=passages))
+        return [docs[p["id"]] for p in ranked[: self.top_k]]
 
 
 class HybridRetriever:

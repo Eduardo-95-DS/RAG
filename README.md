@@ -27,7 +27,7 @@ User question
 1. FAISS semantic search (top 8)
 2. BM25 lexical search (top 8)
 3. Reciprocal Rank Fusion merge (k=60, top 8 candidates)
-4. Cross-encoder reranking → top 5 returned to LLM
+4. Cross-encoder reranking (FlashRank ONNX, `ms-marco-MiniLM-L-12-v2`) → top 5 returned to LLM
 
 ## Stack
 
@@ -37,7 +37,7 @@ User question
 | Embeddings | Vertex AI `text-embedding-005` (via `langchain-google-vertexai`) |
 | Vector store | FAISS (CPU), persisted to GCS across Cloud Run cold starts |
 | Lexical search | BM25 (`rank_bm25`) |
-| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| Reranker | FlashRank `ms-marco-MiniLM-L-12-v2` (quantized ONNX, no torch) |
 | Graph | LangGraph |
 | UI | Streamlit |
 
@@ -91,11 +91,11 @@ gcloud builds log <build-id> --region=southamerica-east1
 
 Not wired to push — retrieval quality doesn't change on most commits, so this stays manual. Run it after any change to chunk size, embedding model, or reranker settings.
 
-**Baseline (RRF k=8, rerank top_k=5, `text-embedding-005`):** 100% hit rate, 61% mean context precision. (Superseded the earlier `bge-small-en-v1.5` baseline of 96% / 53% when the branch moved to Vertex embeddings.)
+**Baseline (RRF k=8, rerank top_k=5, `text-embedding-005`):** 100% hit rate, 61% mean context precision. Held identically after the item-7 reranker swap to FlashRank `ms-marco-MiniLM-L-12-v2` (2026-07-15) — same numbers as the previous sentence-transformers `ms-marco-MiniLM-L-6-v2`, but without torch. (Both superseded the earlier `bge-small-en-v1.5` baseline of 96% / 53% from before the Vertex-embeddings move.)
 
 ## Answer Quality Evaluation
 
-Retrieval eval only checks whether the *retriever* finds the right chunks — it says nothing about whether the final, user-facing answer is any good. `ci/answer_quality_eval.py`, run via the `rag-gcp-answer-eval-manual` Cloud Build trigger, closes that gap: it runs the real `rewriter -> responder -> guardrail` graph (the same code path `streamlit_app.py` uses) against the same 25 questions, then scores the final answers with the Vertex AI Gen AI evaluation service (LLM-as-judge, reference-free — no golden answers needed):
+Retrieval eval only checks whether the *retriever* finds the right chunks — it says nothing about whether the final, user-facing answer is any good. `ci/answer_quality_eval.py`, run via the `rag-gcp-answer-eval-manual` Cloud Build trigger, closes that gap: it runs the real `rewriter -> responder -> guardrail` graph (the same code path `streamlit_app.py` uses) against the first 10 (financial) of the 25 questions (`--limit=10` — the full set can't finish under the TPM cap), then scores the final answers with two Vertex Gen AI eval metrics plus a local key-figure correctness check against golden reference answers:
 
 ```bash
 gcloud builds triggers run rag-gcp-answer-eval-manual --branch=rag-gcp --region=southamerica-east1

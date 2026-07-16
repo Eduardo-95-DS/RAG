@@ -40,6 +40,9 @@ steps:
         apt-get update && apt-get install -y --no-install-recommends libgomp1
         pip install --no-cache-dir uv
         uv sync --locked --no-cache
+        # FlashRank reranker (item 7) model cache — writable /workspace path
+        # (build isn't in /app; the app image bakes it at /app/.flashrank_cache).
+        export FLASHRANK_CACHE_DIR=/workspace/.flashrank_cache
         uv run python ci/answer_quality_eval.py \
           --limit=10 \
           --fail-under-groundedness=0.7 \

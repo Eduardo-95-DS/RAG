@@ -33,6 +33,10 @@ steps:
         apt-get update && apt-get install -y --no-install-recommends libgomp1
         pip install --no-cache-dir uv
         uv sync --locked --no-cache
+        # FlashRank reranker (item 7) downloads its ONNX model to this dir.
+        # The build runs in /workspace, not /app, so point the cache at a
+        # writable path here (the app image bakes it at /app/.flashrank_cache).
+        export FLASHRANK_CACHE_DIR=/workspace/.flashrank_cache
         uv run python ci/retrieval_eval.py --fail-under-hit-rate=0.90
 
 # No images built, no deploy — this pipeline only reports pass/fail.
