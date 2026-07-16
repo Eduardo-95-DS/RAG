@@ -37,7 +37,7 @@ User question
 | Embeddings | Vertex AI `text-embedding-005` (via `langchain-google-vertexai`) |
 | Vector store | FAISS (CPU), persisted to GCS across Cloud Run cold starts |
 | Lexical search | BM25 (`rank_bm25`) |
-| Reranker | FlashRank `ms-marco-MiniLM-L-12-v2` (quantized ONNX, no torch) |
+| Reranker | FlashRank `ms-marco-MiniLM-L-12-v2` (quantized ONNX; removing torch cut the image 538.9 MB → 379.9 MB) |
 | Graph | LangGraph |
 | UI | Streamlit |
 
