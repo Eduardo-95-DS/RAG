@@ -49,6 +49,23 @@ dependencies = [
     # block (formerly below) is gone.
     "flashrank>=0.2.10",
     "streamlit>=1.48.1",
+    # FastAPI backend (item 8): the RAG pipeline is served as a REST API
+    # (src/api/main.py) run by uvicorn. These are backend-only — the thin UI
+    # (Dockerfile.ui) installs just the `ui` dependency group below.
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
+
+# Thin-UI dependency group (item 8): the split Streamlit client needs ONLY
+# streamlit + requests — no langchain/faiss/flashrank/torch/vertex. Dockerfile.ui
+# installs just this group (`uv sync --only-group ui --no-install-project`), so
+# the UI image is a fraction of the API image. streamlit/requests are also in
+# the main `dependencies` list (the eval + local dev use them), which is fine —
+# a package can appear in both.
+[dependency-groups]
+ui = [
+    "streamlit>=1.48.1",
+    "requests>=2.32.4",
 ]
 
 # The app imports its own code as "src.config", "src.node", etc. (not

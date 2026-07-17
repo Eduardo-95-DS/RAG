@@ -43,6 +43,8 @@ User question
 
 ## Setup
 
+The app is split into two services (item 8): a **FastAPI backend** (`src/api/main.py`, the full RAG pipeline) and a **thin Streamlit UI** (`streamlit_app.py`, which only calls the backend's `/query`).
+
 ```bash
 # Install dependencies
 uv sync
@@ -50,11 +52,18 @@ uv sync
 # Add your Groq API key
 echo "GROQ_API_KEY=your_key_here" > .env
 
-# Run the app (builds FAISS index on first run)
-streamlit run streamlit_app.py
+# Terminal 1 — backend. FLASHRANK_CACHE_DIR points the reranker model cache at
+# a writable path (the container bakes it at /app/.flashrank_cache; locally you
+# must override it, or startup fails trying to write to /app).
+FLASHRANK_CACHE_DIR=~/.cache/flashrank uv run uvicorn src.api.main:app --port 8000
+
+# Terminal 2 — thin UI, pointed at the backend
+BACKEND_URL=http://localhost:8000 uv run --no-project streamlit run streamlit_app.py
 ```
 
-The FAISS index is built from PDFs in `data/` on first run and cached to `faiss_index/`. Subsequent runs load from cache.
+Or hit the API directly: `curl -X POST localhost:8000/query -H 'Content-Type: application/json' -d '{"question":"What were NVIDIA 2025 revenues?"}'`. Any client (a Slack bot, a CLI) can consume `/query` the same way.
+
+The FAISS index is built from the PDF on first run and cached to `faiss_index/` (and to GCS across Cloud Run cold starts). Subsequent runs load from cache.
 
 ## Configuration
 

@@ -1,58 +1,87 @@
+# Two-service deploy (item 8): build + push both the API and UI images, deploy
+# rag-api first, capture its URL, then deploy rag-ui pointed at it. Only rag-api
+# gets the Groq/LangSmith secrets + does the heavy work; rag-ui is a thin client.
+#
+# Both services share an API_KEY secret: rag-api checks the X-API-Key header,
+# rag-ui sends it. This blocks random callers from burning the Groq quota via
+# the public /query endpoint (and is the same key a future Slack bot would use).
 steps:
-  # Build the image, tagging with the short commit SHA so every build is
-  # traceable to the exact commit that produced it (and so Artifact Registry
-  # keeps a distinct image per push, not overwriting a fixed tag like ":v3").
+  # --- build both images ---
   - name: "gcr.io/cloud-builders/docker"
     args:
       - "build"
+      - "-f"
+      - "Dockerfile.api"
       - "-t"
-      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:$SHORT_SHA"
+      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-api:$SHORT_SHA"
       - "-t"
-      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:latest"
+      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-api:latest"
       - "."
 
   - name: "gcr.io/cloud-builders/docker"
     args:
-      - "push"
-      - "--all-tags"
-      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app"
+      - "build"
+      - "-f"
+      - "Dockerfile.ui"
+      - "-t"
+      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-ui:$SHORT_SHA"
+      - "-t"
+      - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-ui:latest"
+      - "."
 
-  # Deploy the SHA-tagged image, not :latest — keeps the deployed revision
-  # pinned to a specific, reproducible image even if :latest moves later.
+  # --- push both ---
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "--all-tags", "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-api"]
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "--all-tags", "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-ui"]
+
+  # --- deploy rag-api (heavy backend) ---
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
       - "run"
       - "deploy"
-      - "rag-app"
-      - "--image=southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:$SHORT_SHA"
+      - "rag-api"
+      - "--image=southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-api:$SHORT_SHA"
       - "--region=southamerica-east1"
       - "--service-account=rag-cloudrun@$PROJECT_ID.iam.gserviceaccount.com"
-      # LangSmith tracing: LangChain auto-emits traces when these env vars are
-      # present (langsmith ships transitively with langchain — no import needed).
-      # --set-secrets replaces the whole secret set when passed, so GROQ stays on
-      # this same line. If the LangSmith account is EU-region, also add
-      # LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com to the env-vars
-      # below, or auth silently fails.
-      - "--set-secrets=GROQ_API_KEY=groq-api-key:latest,LANGSMITH_API_KEY=langsmith-api-key:latest"
+      # Backend gets the Groq + LangSmith secrets AND the shared API_KEY.
+      - "--set-secrets=GROQ_API_KEY=groq-api-key:latest,LANGSMITH_API_KEY=langsmith-api-key:latest,API_KEY=rag-api-key:latest"
       - "--set-env-vars=LANGSMITH_TRACING=true,LANGSMITH_PROJECT=rag-gcp"
       - "--memory=2Gi"
       - "--cpu=2"
       - "--allow-unauthenticated"
 
-images:
-  - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:$SHORT_SHA"
-  - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-app:latest"
+  # --- deploy rag-ui, pointed at rag-api's URL ---
+  # rag-api's URL isn't known until it's deployed, so read it back with
+  # `services describe` and pass it as BACKEND_URL. rag-ui gets the same
+  # API_KEY (to send as X-API-Key) but NONE of the Groq/LangSmith secrets.
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        set -eu
+        API_URL=$(gcloud run services describe rag-api \
+          --region=southamerica-east1 --format='value(status.url)')
+        echo "rag-api URL: $API_URL"
+        gcloud run deploy rag-ui \
+          --image=southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-ui:$SHORT_SHA \
+          --region=southamerica-east1 \
+          --service-account=rag-cloudrun@$PROJECT_ID.iam.gserviceaccount.com \
+          --set-secrets=API_KEY=rag-api-key:latest \
+          --set-env-vars=BACKEND_URL=$API_URL \
+          --memory=512Mi \
+          --cpu=1 \
+          --allow-unauthenticated
 
-# NOTE: serviceAccount is intentionally NOT declared here. It's already set
-# on the trigger itself (rag-gcp-push-deploy uses the dedicated
-# rag-cloudbuild@<project-id>.iam.gserviceaccount.com — the legacy default
-# {PROJECT_NUMBER}@cloudbuild.gserviceaccount.com was never provisioned on
-# this project). A prior attempt at declaring
-# it here too, with the exact same value as the trigger, produced
-# "invalid value for build.service_account" — contrary to what
-# https://docs.cloud.google.com/build/docs/securing-builds/configure-user-specified-service-accounts
-# implies (it says a config-level value is merely "ignored" when a trigger
-# invokes the build, not that it causes an error). Testing without it.
+images:
+  - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-api:$SHORT_SHA"
+  - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-api:latest"
+  - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-ui:$SHORT_SHA"
+  - "southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-ui:latest"
+
+# serviceAccount intentionally NOT declared here — set on the trigger (see the
+# note that was in the pre-split cloudbuild.yaml; same reasoning holds).
 options:
   logging: CLOUD_LOGGING_ONLY

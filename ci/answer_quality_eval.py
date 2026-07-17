@@ -235,40 +235,70 @@ def _run_with_rate_limit_retry(graph, question: str) -> dict:
             time.sleep(wait)
 
 
-def build_eval_dataset(limit: int = 0) -> pd.DataFrame:
-    """
-    Run the real rewriter -> responder -> guardrail graph for every question
-    and build the {prompt, response, reference} DataFrame the Gen AI eval
-    service needs.
+def _answer_via_api(api_url: str, api_key: str, question: str):
+    """POST /query to the deployed backend; return (answer, context_string).
 
-    prompt = question + retrieved context (per the documented pattern: the
-    evaluator needs to see what information the model had access to, not
-    just the bare question).
-    response = the final, user-facing answer — i.e. post-guardrail, exactly
-    what a real user would see, fallback text included if it fired.
+    This is the eval-fidelity mode (item 8): grade the EXACT deployed endpoint
+    users hit, not a pipeline rebuilt in-process. The API returns `sources`
+    (list of {text, source, page}) instead of Document objects.
+    """
+    import requests
+    headers = {"X-API-Key": api_key} if api_key else {}
+    for attempt in range(1, MAX_RATE_LIMIT_RETRIES + 1):
+        resp = requests.post(
+            f"{api_url.rstrip('/')}/query",
+            json={"question": question, "history": []},
+            headers=headers, timeout=120,
+        )
+        if resp.status_code == 429:  # backend rate-limited; back off
+            if attempt == MAX_RATE_LIMIT_RETRIES:
+                resp.raise_for_status()
+            time.sleep(10.0)
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        answer = data.get("answer", "")
+        context = "\n\n".join(s.get("text", "") for s in (data.get("sources") or [])[:8])
+        return answer, context
+    return "", ""
+
+
+def build_eval_dataset(limit: int = 0, api_url: str = "", api_key: str = "") -> pd.DataFrame:
+    """
+    Build the {prompt, response, reference} DataFrame the Gen AI eval service
+    needs, by answering each question either IN-PROCESS (default) or against a
+    deployed /query endpoint (api_url set — item 8 eval-fidelity mode).
+
+    prompt = question + retrieved context (the evaluator needs to see what
+    information the model had access to). response = the final, post-guardrail
+    answer, exactly what a user would see.
 
     `limit` > 0 evaluates only the first N question/reference pairs (kept in
-    lockstep). Used to read a new metric's scale on a small slice that fits
-    comfortably under Groq's TPM cap, without a full 25-question run.
+    lockstep) — used to fit under Groq's TPM cap without a full 25-question run.
     """
     questions = QUESTIONS[:limit] if limit and limit > 0 else QUESTIONS
     references = REFERENCE_ANSWERS[:limit] if limit and limit > 0 else REFERENCE_ANSWERS
 
-    llm = Config.get_llm()
-    vs = VectorStore()
-    vs.load(FAISS_INDEX_PATH)
-    retriever = vs.get_hybrid_retriever(k=8, rerank_top_k=5)
-
-    graph = GraphBuilder(retriever, llm)
+    graph = None
+    if not api_url:
+        # In-process mode: build the pipeline locally.
+        llm = Config.get_llm()
+        vs = VectorStore()
+        vs.load(FAISS_INDEX_PATH)
+        retriever = vs.get_hybrid_retriever(k=8, rerank_top_k=5)
+        graph = GraphBuilder(retriever, llm)
 
     prompts = []
     responses = []
 
     for i, question in enumerate(questions):
-        result = _run_with_rate_limit_retry(graph, question)
-        answer = result.get("answer", "")
-        retrieved_docs = result.get("retrieved_docs", [])
-        context = "\n\n".join(d.page_content for d in retrieved_docs[:8])
+        if api_url:
+            answer, context = _answer_via_api(api_url, api_key, question)
+        else:
+            result = _run_with_rate_limit_retry(graph, question)
+            answer = result.get("answer", "")
+            retrieved_docs = result.get("retrieved_docs", [])
+            context = "\n\n".join(d.page_content for d in retrieved_docs[:8])
 
         prompt = f"Answer the question: {question}\n\nContext:\n{context}"
         prompts.append(prompt)
@@ -291,16 +321,19 @@ def build_eval_dataset(limit: int = 0) -> pd.DataFrame:
 
 
 def run_eval(fail_under_groundedness: float, fail_under_qa_quality: float,
-             fail_under_qa_correctness: float, limit: int = 0) -> int:
+             fail_under_qa_correctness: float, limit: int = 0,
+             api_url: str = "", api_key: str = "") -> int:
     n = limit if (limit and limit > 0) else len(QUESTIONS)
     print("NVIDIA RAG — Answer Quality Evaluation (CI gate)")
     print("=" * 60)
     print(f"Question set: {n}" + (f" (limited from {len(QUESTIONS)})" if n != len(QUESTIONS) else ""))
-    print("Running live pipeline (rewriter -> responder -> guardrail) "
-          "for each question...")
+    if api_url:
+        print(f"Mode: DEPLOYED API ({api_url}) — grading the live /query endpoint")
+    else:
+        print("Mode: in-process pipeline (rewriter -> responder -> guardrail)")
     print()
 
-    dataset = build_eval_dataset(limit=limit)
+    dataset = build_eval_dataset(limit=limit, api_url=api_url, api_key=api_key)
 
     print()
     print("Dataset built. Scoring with Vertex AI Gen AI evaluation service...")
@@ -410,10 +443,26 @@ if __name__ == "__main__":
              "Use for a quick subset run — e.g. to read a new metric's scale "
              "on a slice that fits under Groq's TPM cap without a full run.",
     )
+    parser.add_argument(
+        "--api-url",
+        default="",
+        help="If set, grade the DEPLOYED /query endpoint (item 8 eval-fidelity "
+             "mode) instead of rebuilding the pipeline in-process. Needs no local "
+             "FAISS index. E.g. https://rag-api-xxxx.run.app",
+    )
+    parser.add_argument(
+        "--api-key",
+        default="",
+        help="X-API-Key header value for --api-url (the shared rag-api key). "
+             "Can also be read from the API_KEY env var.",
+    )
     args = parser.parse_args()
+    import os as _os
     sys.exit(run_eval(
         args.fail_under_groundedness,
         args.fail_under_qa_quality,
         args.fail_under_qa_correctness,
         args.limit,
+        args.api_url,
+        args.api_key or _os.getenv("API_KEY", ""),
     ))

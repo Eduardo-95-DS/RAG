@@ -1,28 +1,27 @@
-"""Streamlit UI for NVIDIA 2025 Annual Report Assistant"""
+"""Thin Streamlit client for the NVIDIA 2025 Annual Report Assistant (item 8).
 
-# import os
-# os.environ["HF_HUB_OFFLINE"] = "1"
+This is now a thin UI: it holds NO pipeline code (no LangChain, FAISS, torch,
+Groq). It POSTs questions to the FastAPI backend's /query endpoint and renders
+the JSON it gets back. Its only dependencies are `streamlit` and `requests`.
 
-import streamlit as st
-from pathlib import Path
+Config via env:
+  BACKEND_URL   base URL of the rag-api service (default http://localhost:8000)
+  API_KEY       shared secret sent as the X-API-Key header (optional locally)
+"""
+import os
 import time
 
-from src.config.config import Config
-from src.document_ingestion.document_processor import DocumentProcessor
-from src.vectorstore.vectorstore import VectorStore
-from src.graph_builder.graph_builder import GraphBuilder
-from src.node.reactnode import RAGNodes
-from src.feedback.feedback_store import save_feedback
-from src.logging.rag_logger import get_logger
+import requests
+import streamlit as st
 
-log = get_logger()
-
-FAISS_INDEX_PATH = "faiss_index"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+API_KEY = os.getenv("API_KEY", "")
+REQUEST_TIMEOUT = 120  # the pipeline can take a few seconds; be generous
 
 st.set_page_config(
     page_title="NVIDIA 2025 Annual Report Assistant",
     page_icon="📊",
-    layout="centered"
+    layout="centered",
 )
 
 st.markdown("""
@@ -37,73 +36,44 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def _headers():
+    return {"X-API-Key": API_KEY} if API_KEY else {}
+
+
+def call_query(question: str, history: list) -> dict:
+    """POST /query. history is a list of {'q','a'} for the last few turns."""
+    resp = requests.post(
+        f"{BACKEND_URL}/query",
+        json={"question": question, "history": history[-3:]},
+        headers=_headers(),
+        timeout=REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def call_feedback(query: str, rewritten_query: str, answer: str, rating: int) -> None:
+    """POST /feedback. Best-effort — never breaks the UI."""
+    try:
+        requests.post(
+            f"{BACKEND_URL}/feedback",
+            json={"query": query, "rewritten_query": rewritten_query,
+                  "answer": answer, "rating": rating},
+            headers=_headers(),
+            timeout=10,
+        )
+    except requests.RequestException:
+        pass
+
+
 def init_session_state():
-    """Initialize session state variables"""
-    if 'rag_system' not in st.session_state:
-        st.session_state.rag_system = None
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = False
     if 'history' not in st.session_state:
         st.session_state.history = []
 
 
-@st.cache_resource
-def initialize_rag():
-    """Initialize the RAG system (cached across all sessions)"""
-    try:
-        llm = Config.get_llm()
-        doc_processor = DocumentProcessor(
-            chunk_size=Config.CHUNK_SIZE,
-            chunk_overlap=Config.CHUNK_OVERLAP
-        )
-        vector_store = VectorStore()
-
-        if Path(FAISS_INDEX_PATH).exists():
-            # Same running container, already warm (e.g. a Streamlit rerun) —
-            # local disk still has it, no GCS round trip needed.
-            vector_store.load(FAISS_INDEX_PATH)
-            num_chunks = "cached"
-        elif vector_store.download_from_gcs(Config.FAISS_INDEX_GCS_PREFIX, FAISS_INDEX_PATH):
-            # Fresh container, but a prior cold start already built and
-            # uploaded the index — download instead of re-embedding.
-            log.info("Loaded FAISS index from GCS cache, skipped rebuild")
-            vector_store.load(FAISS_INDEX_PATH)
-            num_chunks = "cached (GCS)"
-        else:
-            # First cold start ever (or the GCS cache was cleared): build
-            # from source, then upload so the next cold start can skip this.
-            documents = doc_processor.process_urls(Config.SOURCES)
-            vector_store.create_vectorstore(documents)
-            vector_store.save(FAISS_INDEX_PATH)
-            num_chunks = len(documents)
-            try:
-                vector_store.upload_to_gcs(Config.FAISS_INDEX_GCS_PREFIX, FAISS_INDEX_PATH)
-                log.info("Uploaded freshly built FAISS index to GCS cache")
-            except Exception as e:
-                # Non-fatal: the app works fine off the local index for this
-                # container's lifetime. Just means the next cold start will
-                # rebuild again instead of hitting the cache.
-                log.warning(f"Failed to upload FAISS index to GCS cache: {e}")
-
-        graph_builder = GraphBuilder(
-            retriever=vector_store.get_hybrid_retriever(),
-            llm=llm
-        )
-        graph_builder.build()
-
-        return graph_builder, num_chunks
-    except Exception as e:
-        st.error(f"Failed to initialize: {str(e)}")
-        return None, 0
-
-
 def render_transparency_panel(res: dict):
-    """Show how the answer was produced: rewrite, retrieved chunks, grounding.
-
-    `res` is st.session_state.last_result. Guards the case where no chunks were
-    retrieved (unanswerable question, or the agent answered without retrieving).
-    """
-    docs = res.get('retrieved_docs') or []
+    """Show how the answer was produced, from the /query JSON payload."""
+    sources = res.get('sources') or []
     route = res.get('route', 'retrieve')
     route_labels = {
         'retrieve': "📚 Retrieve — answered from the annual report",
@@ -115,7 +85,6 @@ def render_transparency_panel(res: dict):
         st.markdown(f"**Route:** {route_labels.get(route, route)}")
 
         if route != 'retrieve':
-            # Conversational / refuse: no rewrite, no retrieval, no grounding check.
             st.markdown(
                 "This question skipped retrieval, so there are no source chunks or "
                 "grounding check for it."
@@ -125,19 +94,19 @@ def render_transparency_panel(res: dict):
         rewritten = res.get('rewritten_query') or "(no rewrite)"
         st.markdown(f"**Rewritten query:** {rewritten}")
 
-        if docs:
+        if sources:
             st.markdown(
-                f"**Retrieved {len(docs)} chunks** "
+                f"**Retrieved {len(sources)} chunks** "
                 "(hybrid FAISS + BM25, cross-encoder reranked)"
             )
-            for i, d in enumerate(docs, start=1):
-                title = d['content'][:80].replace("\n", " ").strip()
+            for i, d in enumerate(sources, start=1):
+                title = d['text'][:80].replace("\n", " ").strip()
                 with st.expander(f"Chunk {i}: {title}…"):
-                    st.markdown(d['content'])
+                    st.markdown(d['text'])
                     meta_bits = []
                     if d.get('source'):
                         meta_bits.append(f"source: {d['source']}")
-                    if d.get('page') != '' and d.get('page') is not None:
+                    if d.get('page') not in ('', None):
                         meta_bits.append(f"page: {d['page']}")
                     if meta_bits:
                         st.caption(" | ".join(meta_bits))
@@ -155,7 +124,6 @@ def render_transparency_panel(res: dict):
 
 
 def main():
-    """Main application"""
     init_session_state()
 
     with st.sidebar:
@@ -187,26 +155,8 @@ def main():
         "Ask a question below and get an answer sourced directly from the report."
     )
 
-    if not st.session_state.initialized:
-        st.info(
-            "⏳ If this is the first visit in a while, initial setup can take "
-            "30-60 seconds while the app downloads its cross-encoder model and builds "
-            "its search index. This only happens once per app restart, later "
-            "questions will be fast."
-        )
-        with st.spinner("Loading system..."):
-            rag_system, num_chunks = initialize_rag()
-            if rag_system:
-                st.session_state.rag_system = rag_system
-                st.session_state.initialized = True
-                if num_chunks == "cached":
-                    st.success("✅ System ready! (index loaded from cache)")
-                else:
-                    st.success(f"✅ System ready! ({num_chunks} document chunks loaded)")
-
     st.markdown("---")
 
-    # Search form
     with st.form("search_form"):
         typed_question = st.text_input(
             "Enter your question:",
@@ -214,7 +164,6 @@ def main():
         )
         submit = st.form_submit_button("🔍 Search")
 
-    # Suggested questions
     st.markdown("**Or try one of these:**")
     col1, col2 = st.columns(2)
     with col1:
@@ -224,7 +173,6 @@ def main():
         q3 = st.button("📦 What are NVIDIA's main products?")
         q4 = st.button("👤 Who leads NVIDIA?")
 
-    # Determine which question to process
     question_to_process = None
     if submit and typed_question:
         question_to_process = typed_question.strip()
@@ -237,54 +185,32 @@ def main():
     elif q4:
         question_to_process = "Who leads NVIDIA?"
 
-    # Fixed answer area
     answer_area = st.empty()
 
-    # Process question
     if question_to_process:
         if len(question_to_process) > 500:
             answer_area.warning("Question too long. Please keep it under 500 characters.")
-        elif st.session_state.rag_system:
+        else:
             with st.spinner("Retrieving and generating answer (this may take a few seconds)..."):
                 try:
-                    start_time = time.time()
-                    # Format the last 3 Q/A turns so the rewriter can resolve
-                    # conversational references (e.g. "How does that compare?").
-                    history_for_rag = [
+                    history_for_api = [
                         {"q": h["question"], "a": h["answer"]}
                         for h in st.session_state.history[-3:]
                     ]
-                    result = st.session_state.rag_system.run(
-                        question_to_process, history=history_for_rag
-                    )
-                    elapsed_time = time.time() - start_time
+                    result = call_query(question_to_process, history_for_api)
+                    elapsed_time = result.get("elapsed_s", 0.0)
                     st.session_state.history.append({
                         'question': question_to_process,
                         'answer': result['answer'],
-                        'time': elapsed_time
+                        'time': elapsed_time,
                     })
-                    # Trim retrieved docs to what the transparency panel needs,
-                    # so we don't carry full LangChain Document objects in session
-                    # state. May be empty (e.g. unanswerable question, agent never
-                    # called the retriever) — the panel guards against that.
-                    retrieved = result.get('retrieved_docs') or []
-                    trimmed_docs = [
-                        {
-                            'content': d.page_content,
-                            'source': (d.metadata or {}).get('source', ''),
-                            'page': (d.metadata or {}).get('page', ''),
-                        }
-                        for d in retrieved
-                    ]
-                    # Unique key per answer so the widget doesn't carry a stale
-                    # selection over from a previous question.
                     st.session_state.last_result = {
                         'question': question_to_process,
                         'rewritten_query': result.get('rewritten_query', ''),
                         'route': result.get('route', 'retrieve'),
                         'answer': result['answer'],
-                        'retrieved_docs': trimmed_docs,
-                        'grounded': result['answer'] != RAGNodes.FALLBACK_ANSWER,
+                        'sources': result.get('sources', []),
+                        'grounded': result.get('grounded', True),
                     }
                     st.session_state.feedback_key = f"feedback_{len(st.session_state.history)}"
                     with answer_area.container():
@@ -292,30 +218,31 @@ def main():
                         st.success(result['answer'])
                         st.caption(f"⏱️ Response time: {elapsed_time:.2f} seconds")
                         render_transparency_panel(st.session_state.last_result)
-                except Exception as e:
-                    if "rate_limit" in str(e).lower():
+                except requests.HTTPError as e:
+                    status = e.response.status_code if e.response is not None else "?"
+                    if status == 401:
+                        answer_area.error("Backend rejected the request (auth). Check API_KEY.")
+                    elif status == 429:
                         answer_area.error("Too many requests. Please wait a moment and try again.")
                     else:
-                        answer_area.error(f"Failed to answer: {str(e)}")
+                        answer_area.error(f"Backend error ({status}). Please try again.")
+                except requests.RequestException as e:
+                    answer_area.error(f"Couldn't reach the backend: {e}")
 
-    # Feedback — shown for the most recent answer only. st.feedback returns
-    # 0 (thumbs down) or 1 (thumbs up) and re-fires on every script rerun with
-    # the same key, so we only save when the rating actually changes.
+    # Feedback for the most recent answer only.
     if st.session_state.get("last_result"):
         rating = st.feedback("thumbs", key=st.session_state.feedback_key)
         if rating is not None:
             last_saved_key = st.session_state.get("last_saved_feedback_key")
             if last_saved_key != st.session_state.feedback_key:
-                mapped_rating = 1 if rating == 1 else -1
-                save_feedback(
+                call_feedback(
                     query=st.session_state.last_result['question'],
                     rewritten_query=st.session_state.last_result['rewritten_query'],
                     answer=st.session_state.last_result['answer'],
-                    rating=mapped_rating,
+                    rating=1 if rating == 1 else -1,
                 )
                 st.session_state.last_saved_feedback_key = st.session_state.feedback_key
 
-    # History
     if st.session_state.history:
         st.markdown("---")
         st.markdown("### 📜 Recent Searches")
