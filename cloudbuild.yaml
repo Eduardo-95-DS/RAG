@@ -62,15 +62,18 @@ steps:
       - "-c"
       - |
         set -eu
-        API_URL=$(gcloud run services describe rag-api \
+        # $$API_URL / $$(...) are escaped so Cloud Build passes them to bash
+        # rather than treating them as build substitutions. $PROJECT_ID and
+        # $SHORT_SHA are real Cloud Build substitutions (single $).
+        API_URL=$$(gcloud run services describe rag-api \
           --region=southamerica-east1 --format='value(status.url)')
-        echo "rag-api URL: $API_URL"
+        echo "rag-api URL: $$API_URL"
         gcloud run deploy rag-ui \
           --image=southamerica-east1-docker.pkg.dev/$PROJECT_ID/rag-repo/rag-ui:$SHORT_SHA \
           --region=southamerica-east1 \
           --service-account=rag-cloudrun@$PROJECT_ID.iam.gserviceaccount.com \
           --set-secrets=API_KEY=rag-api-key:latest \
-          --set-env-vars=BACKEND_URL=$API_URL \
+          --set-env-vars=BACKEND_URL=$$API_URL \
           --memory=512Mi \
           --cpu=1 \
           --allow-unauthenticated
