@@ -69,10 +69,20 @@ class Config:
         "gs://edu-rag-nvidia-docs/NVIDIA-2025-Annual-Report.pdf"
     ]
 
-    # Where the built FAISS index is cached across Cloud Run cold starts.
-    # No staleness check: if SOURCES or CHUNK_SIZE/CHUNK_OVERLAP change,
-    # delete this prefix in GCS manually to force a rebuild.
-    FAISS_INDEX_GCS_PREFIX = "gs://edu-rag-nvidia-docs/faiss_index"
+    # Qdrant Cloud (item 9): managed vector DB doing hybrid search server-side,
+    # replacing local FAISS + BM25 + the GCS index round-trip. Dense vectors are
+    # still Vertex text-embedding-005 (768-dim); the lexical channel is BM42
+    # sparse vectors (fastembed). QDRANT_URL + QDRANT_API_KEY come from the
+    # environment (Secret Manager on Cloud Run, .env locally).
+    QDRANT_URL = os.getenv("QDRANT_URL", "")
+    QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
+    QDRANT_COLLECTION = "nvidia_annual_report"
+    # Vertex text-embedding-005 output dimensionality (dense vector size).
+    DENSE_DIM = 768
+    # fastembed sparse model for the lexical channel. BM42 is Qdrant's
+    # attention-based BM25 successor, tuned for short-text/RAG retrieval —
+    # Qdrant's own recommendation over BM25 for this use case.
+    SPARSE_MODEL = "Qdrant/bm42-all-minilm-l6-v2-attentions"
 
     @classmethod
     def _require_api_key(cls):

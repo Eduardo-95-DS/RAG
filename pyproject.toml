@@ -10,7 +10,11 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "beautifulsoup4>=4.13.4",
-    "faiss-cpu>=1.12.0",
+    # Qdrant Cloud managed vector DB (item 9) replaced local FAISS + BM25.
+    # qdrant-client talks to the cluster; fastembed supplies the BM42 sparse
+    # (lexical) vectors. faiss-cpu and rank-bm25 were removed with this.
+    "qdrant-client>=1.12.0",
+    "fastembed>=0.5.0",
     "google-cloud-firestore>=2.28.0",
     "google-cloud-storage>=2.18.0",
     # [evaluation] extra pulls in vertexai.evaluation (EvalTask, predefined
@@ -40,7 +44,6 @@ dependencies = [
     "pydantic>=2.11.7",
     "pypdf>=6.0.0",
     "python-dotenv>=1.1.1",
-    "rank-bm25==0.2.2",
     "requests>=2.32.4",
     # Cross-encoder reranker (item 7): FlashRank runs a quantized ONNX
     # cross-encoder via onnxruntime — no torch, no sentence-transformers.

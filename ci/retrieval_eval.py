@@ -23,8 +23,9 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.vectorstore.vectorstore import VectorStore
+from src.config.config import Config
 
-FAISS_INDEX_PATH = "faiss_index"
+# (item 9) retrieval is served by Qdrant Cloud; no local FAISS index path.
 
 # ---------------------------------------------------------------------------
 # Test cases — kept in sync with eval/retrieval_eval.py by hand. If you
@@ -172,12 +173,12 @@ def run_eval(fail_under_hit_rate: float) -> int:
     print("NVIDIA RAG — Retrieval Evaluation (CI gate)")
     print("=" * 60)
 
+    # Item 9: retrieval is served by Qdrant Cloud — no local index to load.
     vs = VectorStore()
-    vs.load(FAISS_INDEX_PATH)
     retriever = vs.get_hybrid_retriever(k=8, rerank_top_k=5)
 
-    print(f"Index : {FAISS_INDEX_PATH}")
-    print(f"Retriever : HybridRetriever  RRF k=8  rerank top_k=5")
+    print(f"Index : Qdrant collection '{Config.QDRANT_COLLECTION}'")
+    print(f"Retriever : HybridRetriever (Qdrant dense+sparse RRF)  k=8  rerank top_k=5")
     print(f"Test cases: {len(TEST_CASES)}")
     print(f"Gate : hit rate must be >= {fail_under_hit_rate:.0%}")
     print()

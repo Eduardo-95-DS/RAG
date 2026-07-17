@@ -1,31 +1,26 @@
 # Manual-only retrieval eval gate. Not wired to any push trigger — run it
 # on demand via:
-#   gcloud builds triggers run rag-gcp-eval-manual --branch=rag-gcp
+#   gcloud builds triggers run rag-gcp-eval-manual --branch=rag-gcp --region=southamerica-east1
 #
 # Deliberately separate from cloudbuild.yaml: retrieval quality doesn't
-# change on most pushes (chunking/embeddings/reranker config changes rarely),
-# so gating every deploy on this would tax pushes that have nothing to do
-# with retrieval. Run this manually after any change to chunk size,
-# embedding model, or reranker settings — see README "Retrieval Evaluation".
-steps:
-  # Pull the FAISS index from GCS so eval runs against the same index
-  # Cloud Run actually serves, not a freshly-built one. mkdir first: gsutil's
-  # multi-source cp refuses to target a destination that doesn't exist yet
-  # (raises "Destination URL must name a directory" instead of creating one).
-  - name: "gcr.io/cloud-builders/gsutil"
-    entrypoint: "bash"
-    args:
-      - "-c"
-      - |
-        mkdir -p faiss_index
-        gsutil -m cp -r "gs://edu-rag-nvidia-docs/faiss_index/*" faiss_index/
+# change on most pushes, so gating every deploy on this would tax pushes that
+# have nothing to do with retrieval. Run manually after any change to chunking,
+# embeddings, the sparse model, or reranker settings — see README.
+#
+# Item 9: retrieval is served by Qdrant Cloud, so there is NO gsutil FAISS-index
+# pull anymore. The eval queries the live Qdrant collection directly. Needs
+# QDRANT_URL + QDRANT_API_KEY (Secret Manager).
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/qdrant-url/versions/latest
+      env: QDRANT_URL
+    - versionName: projects/$PROJECT_ID/secrets/qdrant-api-key/versions/latest
+      env: QDRANT_API_KEY
 
-  # Install deps with uv (same lockfile as the app image — no version
-  # drift between what CI evaluates and what Cloud Run runs) and run the
-  # eval gate. Single step: installing and running together avoids needing
-  # a custom builder image just to get uv onto the base image.
+steps:
   - name: "python:3.13-slim"
     entrypoint: "bash"
+    secretEnv: ["QDRANT_URL", "QDRANT_API_KEY"]
     args:
       - "-c"
       - |
@@ -33,9 +28,8 @@ steps:
         apt-get update && apt-get install -y --no-install-recommends libgomp1
         pip install --no-cache-dir uv
         uv sync --locked --no-cache
-        # FlashRank reranker (item 7) downloads its ONNX model to this dir.
-        # The build runs in /workspace, not /app, so point the cache at a
-        # writable path here (the app image bakes it at /app/.flashrank_cache).
+        # FlashRank + BM42 model caches — writable /workspace path (build isn't
+        # in /app; the app image bakes FlashRank at /app/.flashrank_cache).
         export FLASHRANK_CACHE_DIR=/workspace/.flashrank_cache
         uv run python ci/retrieval_eval.py --fail-under-hit-rate=0.90
 

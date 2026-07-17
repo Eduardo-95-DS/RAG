@@ -62,7 +62,6 @@ from src.config.config import Config
 from src.vectorstore.vectorstore import VectorStore
 from src.graph_builder.graph_builder import GraphBuilder
 
-FAISS_INDEX_PATH = "faiss_index"
 EXPERIMENT_NAME = "rag-answer-quality-eval"
 
 # ---------------------------------------------------------------------------
@@ -281,10 +280,10 @@ def build_eval_dataset(limit: int = 0, api_url: str = "", api_key: str = "") -> 
 
     graph = None
     if not api_url:
-        # In-process mode: build the pipeline locally.
+        # In-process mode: build the pipeline locally. Retrieval is served by
+        # Qdrant Cloud (item 9) — no local index to load.
         llm = Config.get_llm()
         vs = VectorStore()
-        vs.load(FAISS_INDEX_PATH)
         retriever = vs.get_hybrid_retriever(k=8, rerank_top_k=5)
         graph = GraphBuilder(retriever, llm)
 

@@ -1,11 +1,13 @@
 # FastAPI backend image (item 8): the full RAG stack served by uvicorn.
-# This is the heavy image (langchain, faiss, flashrank/onnxruntime, vertex).
-# The thin UI is built separately from Dockerfile.ui.
+# Heavy image (langchain, qdrant-client, fastembed/onnxruntime, flashrank,
+# vertex). The thin UI is built separately from Dockerfile.ui.
 FROM python:3.13-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /uvx /bin/
 
-# libgomp1: OpenMP runtime faiss-cpu needs, missing from slim.
+# libgomp1: OpenMP runtime onnxruntime needs (FlashRank + fastembed/BM42),
+# missing from slim. (faiss-cpu also needed it, but faiss was removed in
+# item 9 when retrieval moved to Qdrant; onnxruntime still needs it.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
@@ -23,9 +25,11 @@ RUN uv sync --locked --no-install-project --no-cache
 COPY . .
 RUN uv sync --locked --no-cache
 
-# Bake the FlashRank ONNX reranker model into the image (item 7) so cold
-# starts don't re-download it. Must match MODEL + cache_dir in vectorstore.py.
+# Bake the ONNX models into the image so cold starts don't re-download them:
+#  - FlashRank reranker (item 7), at the cache_dir vectorstore.py uses
+#  - BM42 sparse embedder (item 9), fastembed's default cache
 RUN uv run python -c "from flashrank import Ranker; Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir='/app/.flashrank_cache')"
+RUN uv run python -c "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm42-all-minilm-l6-v2-attentions')"
 
 # Cloud Run sets $PORT (defaults to 8080). uvicorn serves the FastAPI app.
 ENV PORT=8080
