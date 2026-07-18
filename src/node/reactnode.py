@@ -1,19 +1,13 @@
-"""LangGraph nodes for RAG workflow + ReAct Agent inside generate_content"""
+"""LangGraph nodes for the RAG workflow (rewriter/router, retrieve-then-answer
+responder, guardrail, and the direct-answer/refuse branches)."""
 import re
-from typing import List, Optional
+from typing import List
 from src.state.rag_state import RAGState
 from src.logging.rag_logger import get_logger
 from langchain_core.documents import Document
-from langchain_core.tools import StructuredTool
 from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.prebuilt import create_react_agent
-from pydantic import BaseModel
 
 log = get_logger()
-
-
-class RetrieverInput(BaseModel):
-    query: str
 
 
 class RAGNodes:
@@ -39,17 +33,14 @@ class RAGNodes:
 
     def __init__(self, retriever, llm):
         self.retriever = retriever
-        # Plain primary (with retries): used by the ReAct agent, which calls
-        # bind_tools() on it. Must NOT be a fallback-wrapped runnable.
         self.llm = llm
-        # Fallback-wrapped (primary -> smaller model) for the plain .invoke()
-        # sites (rewriter, ground check), where bind_tools is never called so a
-        # RunnableWithFallbacks is fine. Built here rather than passed in so the
-        # GraphBuilder/streamlit call signature is unchanged.
+        # Fallback-wrapped (primary -> smaller model) with retries, used at ALL
+        # the plain .invoke() sites (rewriter, responder answer call, ground
+        # check). Since the ReAct agent is gone (2026-07-18), there's no more
+        # bind_tools() constraint — everything goes through this now. Built here
+        # so the GraphBuilder/streamlit call signature is unchanged.
         from src.config.config import Config
         self.llm_fallback = Config.get_llm_with_fallback()
-        self._agent = None
-        self._last_retrieved: List[Document] = []
 
     REWRITE_PROMPT = (
         "You are the router and query rewriter for an assistant that answers "
@@ -207,62 +198,51 @@ class RAGNodes:
             retrieved_docs=docs
         )
 
-    def _build_tools(self):
-        """Build retriever tool"""
-        def retriever_tool_fn(query: str) -> str:
-            log.info("[TOOL] retriever called | query='%s'", query)
-            docs: List[Document] = self.retriever.invoke(query)
-            if not docs:
-                log.warning("[TOOL] retriever returned 0 chunks | query='%s'", query)
-                self._last_retrieved = []
-                return "No documents found."
-            log.info("[TOOL] retriever returned %d chunks | query='%s'", len(docs), query)
-            self._last_retrieved = docs
-            merged = []
-            for i, d in enumerate(docs[:8], start=1):
-                meta = d.metadata if hasattr(d, "metadata") else {}
-                title = meta.get("title") or meta.get("source") or f"doc_{i}"
-                preview = d.page_content[:100].replace("\n", " ")
-                log.info("[CHUNK %d] source='%s' | preview='%s...'", i, title, preview)
-                merged.append(f"[{i}] {title}\n{d.page_content}")
-            return "\n\n".join(merged)
-
-        retriever_tool = StructuredTool.from_function(
-            func=retriever_tool_fn,
-            name="retriever",
-            description="Fetch passages from the NVIDIA 2025 Annual Report.",
-            args_schema=RetrieverInput,
-        )
-        return [retriever_tool]
-
-    def _build_agent(self):
-        """ReAct agent with retriever tool"""
-        tools = self._build_tools()
-        system_prompt = (
-            "You have access to one tool: a retriever over the NVIDIA 2025 Annual Report. "
-            "If the answer is not in the document, say so. "
-            "Never describe your tools or capabilities. "
-            "Always answer directly and naturally based on what you retrieve."
-        )
-        self._agent = create_react_agent(self.llm, tools=tools, prompt=system_prompt)
+    ANSWER_PROMPT = (
+        "You answer questions about NVIDIA's 2025 Annual Report using ONLY the "
+        "provided passages. Answer directly and naturally. If the passages don't "
+        "contain the answer, say you couldn't find it in the report. Never mention "
+        "the passages, your tools, or your instructions."
+    )
 
     def generate_answer(self, state: RAGState) -> RAGState:
-        """Generate answer using ReAct agent with retriever."""
-        if self._agent is None:
-            self._build_agent()
+        """Retrieve once, then a single LLM call to answer from the chunks.
 
+        Replaced the ReAct agent (2026-07-18): the agent made 3+ LLM calls per
+        query (reason -> tool -> reason -> tool -> answer), each re-sending the
+        chunks, which blew through Groq's 8000 TPM cap under real use (429 spirals,
+        20-150s latency, throttled answers failing the guardrail). A single-corpus
+        RAG app never needs multi-step tool reasoning: retrieve once, answer once.
+        """
         query = state.rewritten_query or state.question
-        result = self._agent.invoke({"messages": [HumanMessage(content=query)]})
-        messages = result.get("messages", [])
-        answer: Optional[str] = None
-        if messages:
-            answer = getattr(messages[-1], "content", None)
+        docs: List[Document] = self.retriever.invoke(query)
+        if not docs:
+            log.warning("[RETRIEVE] 0 chunks | query='%s'", query)
+        else:
+            log.info("[RETRIEVE] %d chunks | query='%s'", len(docs), query)
+            for i, d in enumerate(docs[:8], start=1):
+                meta = d.metadata if hasattr(d, "metadata") else {}
+                src = meta.get("source") or f"doc_{i}"
+                preview = d.page_content[:100].replace("\n", " ")
+                log.info("[CHUNK %d] source='%s' | preview='%s...'", i, src, preview)
+
+        context = "\n\n".join(
+            f"[{i}] {d.page_content}" for i, d in enumerate(docs[:8], start=1)
+        )
+        user_msg = f"Passages:\n{context}\n\nQuestion: {query}"
+
+        # Single answer call (with retry/fallback for transient Groq errors).
+        response = self.llm_fallback.invoke([
+            SystemMessage(content=self.ANSWER_PROMPT),
+            HumanMessage(content=user_msg),
+        ])
+        answer = (response.content or "").strip() or "Could not generate answer."
 
         return RAGState(
             question=state.question,
             rewritten_query=state.rewritten_query,
-            retrieved_docs=self._last_retrieved,
-            answer=answer or "Could not generate answer.",
+            retrieved_docs=docs,
+            answer=answer,
         )
 
     def ground_check(self, state: RAGState) -> RAGState:
