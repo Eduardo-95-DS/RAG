@@ -23,11 +23,13 @@ User question
                        Answer
 ```
 
-**Retrieval pipeline inside [responder]:**
-1. FAISS semantic search (top 8)
-2. BM25 lexical search (top 8)
-3. Reciprocal Rank Fusion merge (k=60, top 8 candidates)
+**Retrieval pipeline inside [responder]** (item 9: server-side in Qdrant Cloud):
+1. Dense prefetch — Vertex `text-embedding-005` (768-dim) vector search
+2. Sparse prefetch — BM42 lexical vector search
+3. Reciprocal Rank Fusion — merged server-side by Qdrant (top 8 candidates)
 4. Cross-encoder reranking (FlashRank ONNX, `ms-marco-MiniLM-L-12-v2`) → top 5 returned to LLM
+
+Ingestion is a separate one-off step (`ci/ingest_qdrant.py`); nothing is built at query time and there is no index round-trip on cold start.
 
 ## Stack
 
@@ -35,8 +37,8 @@ User question
 |---|---|
 | LLM | Groq — `qwen/qwen3.6-27b` (primary), `openai/gpt-oss-20b` (fallback) |
 | Embeddings | Vertex AI `text-embedding-005` (via `langchain-google-vertexai`) |
-| Vector store | FAISS (CPU), persisted to GCS across Cloud Run cold starts |
-| Lexical search | BM25 (`rank_bm25`) |
+| Vector store | Qdrant Cloud (managed, server-side hybrid search) |
+| Lexical search | BM42 sparse vectors (fastembed), fused with dense server-side (RRF) |
 | Reranker | FlashRank `ms-marco-MiniLM-L-12-v2` (quantized ONNX; removing torch cut the image 538.9 MB → 379.9 MB) |
 | Graph | LangGraph |
 | UI | Streamlit |
@@ -100,7 +102,7 @@ gcloud builds log <build-id> --region=southamerica-east1
 
 Not wired to push — retrieval quality doesn't change on most commits, so this stays manual. Run it after any change to chunk size, embedding model, or reranker settings.
 
-**Baseline (RRF k=8, rerank top_k=5, `text-embedding-005`):** 100% hit rate, 61% mean context precision. Held identically after the item-7 reranker swap to FlashRank `ms-marco-MiniLM-L-12-v2` (2026-07-15) — same numbers as the previous sentence-transformers `ms-marco-MiniLM-L-6-v2`, but without torch. (Both superseded the earlier `bge-small-en-v1.5` baseline of 96% / 53% from before the Vertex-embeddings move.)
+**Baseline (Qdrant hybrid, k=8, rerank top_k=5, `text-embedding-005` dense + BM42 sparse):** 100% hit rate, 56% mean context precision (item 9, 2026-07-18). Hit rate held; precision moved from the previous 61% (local FAISS + BM25) — expected, since Qdrant's server-side RRF + BM42 replace local RRF + rank_bm25, and the guide flags this as movement to measure, not a regression (recall is what matters and it's unchanged). History: FAISS+BM25 was 100%/61% (held across the item-7 FlashRank swap); before that `bge-small-en-v1.5` was 96%/53%.
 
 ## Answer Quality Evaluation
 

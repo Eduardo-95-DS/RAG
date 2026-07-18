@@ -158,8 +158,8 @@ KEY_FIGURES = [
     ["43,210", "43.2", "43.21"],             # 6 cash + marketable securities
     ["115,186", "115.2", "115.19"],          # 7 data center revenue
     ["11,350", "11.4", "11.35"],             # 8 gaming revenue
-    ["1,878", "1.9", "1.88"],                # 9 professional visualization revenue
-    ["1,694", "1.7", "1.69"],                # 10 automotive revenue
+    ["1,878", "1.9", "1.88", "1.878"],       # 9 professional visualization revenue
+    ["1,694", "1.7", "1.69", "1.694"],       # 10 automotive revenue
     ["82,875", "82.9", "82.88"],             # 11 compute & networking op income
     ["blackwell"],                           # 12
     ["hopper", "h100", "h200"],              # 13
