@@ -44,11 +44,31 @@ class Config:
     REASONING_FORMAT = "hidden"
     GPTOSS_REASONING_EFFORT = "low"
 
+    # Deterministic decoding. Added 2026-08-03; before this, every call ran at
+    # Groq's default sampling temperature, which was never a deliberate choice.
+    #
+    # Nothing in this pipeline is a creative task: the rewriter emits a fixed
+    # ROUTE line plus a search query, the responder extracts figures verbatim
+    # from retrieved passages, and the ground check answers one word. Sampling
+    # buys nothing and costs reproducibility — two runs of the SAME commit
+    # scored 0.700 and 0.800 on the 10-question answer eval (one question of
+    # swing, since n=10 makes each question worth 0.100), with individual
+    # questions flipping pass/fail between runs on identical code. That makes
+    # the gate a coin flip at the threshold and makes any A/B smaller than
+    # ~0.200 unmeasurable. It also means the live app gives different answers
+    # to the same question on different days, which is its own problem for a
+    # financial-document assistant.
+    #
+    # Note temperature=0 reduces variance sharply but does not guarantee bitwise
+    # determinism: provider-side batching and float non-associativity can still
+    # shift a token. Expect stable-not-identical.
+    TEMPERATURE = 0.0
+
     @classmethod
     def _model_kwargs(cls, model: str) -> dict:
         """Per-model init kwargs. qwen3.6 and gpt-oss have incompatible reasoning
         params, so branch on the model id rather than passing shared kwargs."""
-        kwargs = {"max_retries": cls.LLM_MAX_RETRIES}
+        kwargs = {"max_retries": cls.LLM_MAX_RETRIES, "temperature": cls.TEMPERATURE}
         if "qwen" in model:
             kwargs["reasoning_effort"] = cls.QWEN_REASONING_EFFORT
             kwargs["reasoning_format"] = cls.REASONING_FORMAT
