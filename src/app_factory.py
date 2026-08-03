@@ -24,7 +24,9 @@ def build_pipeline():
     """
     llm = Config.get_llm()
     vector_store = VectorStore()
-    retriever = vector_store.get_hybrid_retriever()  # validates QDRANT_* env
+    retriever = vector_store.get_hybrid_retriever(  # validates QDRANT_* env
+        k=Config.RETRIEVAL_K, rerank_top_k=Config.RERANK_TOP_K
+    )
 
     graph_builder = GraphBuilder(retriever=retriever, llm=llm)
     graph_builder.build()

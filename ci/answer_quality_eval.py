@@ -284,7 +284,10 @@ def build_eval_dataset(limit: int = 0, api_url: str = "", api_key: str = "") -> 
         # Qdrant Cloud (item 9) — no local index to load.
         llm = Config.get_llm()
         vs = VectorStore()
-        retriever = vs.get_hybrid_retriever(k=8, rerank_top_k=5)
+        # Read the width from Config so this eval measures what the app serves.
+        retriever = vs.get_hybrid_retriever(
+            k=Config.RETRIEVAL_K, rerank_top_k=Config.RERANK_TOP_K
+        )
         graph = GraphBuilder(retriever, llm)
 
     prompts = []

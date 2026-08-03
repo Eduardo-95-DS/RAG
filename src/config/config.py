@@ -84,6 +84,21 @@ class Config:
     # Qdrant's own recommendation over BM25 for this use case.
     SPARSE_MODEL = "Qdrant/bm42-all-minilm-l6-v2-attentions"
 
+    # Retrieval width. RETRIEVAL_K = fused candidates Qdrant returns after
+    # server-side RRF; RERANK_TOP_K = how many FlashRank keeps and the responder
+    # puts in the prompt.
+    #
+    # Raised from 8/5 on 2026-08-03. The 2026-07-18 ReAct removal cut key-figure
+    # correctness from 0.900 to 0.500 (see known_issues.md): the agent used to
+    # recover figures buried in the financial tables by re-querying, and
+    # retrieve-once can only abstain when its single shot returns a mangled
+    # table. Widening the one retrieval is the zero-extra-LLM-call fix to try
+    # first — if the missing figures sit at ranks 6-10, this recovers them at no
+    # TPM cost. RERANK_TOP_K = 8 is the natural ceiling: generate_answer already
+    # slices docs[:8] when building the context block.
+    RETRIEVAL_K = 16
+    RERANK_TOP_K = 8
+
     @classmethod
     def _require_api_key(cls):
         api_key = os.getenv("GROQ_API_KEY")
