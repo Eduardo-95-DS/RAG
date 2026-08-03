@@ -10,7 +10,7 @@ User question
     ▼
 [rewriter]  — routes the question AND (for RETRIEVE) reformulates it for search
     │
-    ├── RETRIEVE ──▶ [responder] — ReAct agent w/ hybrid retriever (FAISS + BM25 + cross-encoder)
+    ├── RETRIEVE ──▶ [responder] — retrieve once (Qdrant hybrid + rerank), then one LLM call to answer
     │                     │
     │                     ▼
     │                [guardrail] — LLM-as-judge grounding check; fallback if unsupported
