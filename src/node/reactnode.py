@@ -2,6 +2,7 @@
 responder, guardrail, and the direct-answer/refuse branches)."""
 import re
 from typing import List
+from src.config.config import Config
 from src.state.rag_state import RAGState
 from src.logging.rag_logger import get_logger
 from langchain_core.documents import Document
@@ -39,7 +40,6 @@ class RAGNodes:
         # check). Since the ReAct agent is gone (2026-07-18), there's no more
         # bind_tools() constraint — everything goes through this now. Built here
         # so the GraphBuilder/streamlit call signature is unchanged.
-        from src.config.config import Config
         self.llm_fallback = Config.get_llm_with_fallback()
 
     REWRITE_PROMPT = (
@@ -205,38 +205,157 @@ class RAGNodes:
         "the passages, your tools, or your instructions."
     )
 
-    def generate_answer(self, state: RAGState) -> RAGState:
-        """Retrieve once, then a single LLM call to answer from the chunks.
+    # Phrases that mark an answer as "I couldn't find it in the passages".
+    # Matched as plain substrings on the lowercased answer — deliberately NO LLM
+    # call, because this runs on the latency-critical path and an extra judge
+    # call would cost more than the retry it guards.
+    # Written in EXPANDED form only ("do not", never "don't") — _normalize()
+    # expands contractions before matching, so listing both would be dead weight
+    # and one of them would inevitably drift.
+    ABSTENTION_MARKERS = (
+        "could not find", "cannot find", "unable to find", "not able to find",
+        "do not state", "does not state", "not stated",
+        "do not contain", "does not contain", "do not include",
+        "does not include", "do not provide", "does not provide",
+        "not specified", "not mentioned", "not provided", "no information",
+        "not in the report", "not in the provided",
+    )
 
-        Replaced the ReAct agent (2026-07-18): the agent made 3+ LLM calls per
-        query (reason -> tool -> reason -> tool -> answer), each re-sending the
-        chunks, which blew through Groq's 8000 TPM cap under real use (429 spirals,
-        20-150s latency, throttled answers failing the guardrail). A single-corpus
-        RAG app never needs multi-step tool reasoning: retrieve once, answer once.
+    # Stripped from the retry query. Only interrogatives, auxiliaries, articles
+    # and prepositions — never content words, entity names or numbers.
+    QUERY_STOPWORDS = frozenset({
+        "what", "which", "who", "when", "where", "how", "why",
+        "was", "were", "is", "are", "be", "been", "did", "do", "does",
+        "has", "have", "had", "the", "a", "an", "of", "in", "on", "at",
+        "for", "to", "from", "by", "with", "much", "many", "and", "or",
+        "its", "their", "that", "this", "there", "it",
+    })
+
+    # Chunks fed to the retry answer call. Larger than the first pass because
+    # this path has already failed once, so breadth is worth more than the token
+    # saving — but bounded, since the TPM cap is real.
+    RETRY_CONTEXT_MAX = 12
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Lowercase, fold the curly apostrophe, expand contractions.
+
+        Both matter in practice: qwen emits U+2019 in prose ("NVIDIA's"), and
+        it phrases abstentions either way ("don't contain" / "do not contain"),
+        so raw substring matching silently misses half of them.
+        """
+        low = (text or "").lower().replace("’", "'")
+        low = low.replace("can't", "cannot")   # before the generic n't rule,
+        return low.replace("n't", " not")      # which would give "ca not"
+
+    @classmethod
+    def _is_abstention(cls, answer: str) -> bool:
+        """True if the model said it couldn't answer from the passages."""
+        normalized = cls._normalize(answer)
+        return any(marker in normalized for marker in cls.ABSTENTION_MARKERS)
+
+    @classmethod
+    def _keyword_query(cls, query: str) -> str:
+        """Strip question phrasing, leaving content terms.
+
+        'What was NVIDIA's income tax expense in fiscal year 2025?'
+          -> "NVIDIA's income tax expense fiscal year 2025"
+
+        Financial figures appear in the report as terse label/number pairs in
+        tables, not as prose answers to questions, so dropping interrogatives
+        lets the BM42 lexical channel weight the content terms instead of
+        spending its mass on 'what/was/in'. Pure string work: no LLM call.
+        """
+        tokens = re.findall(r"[A-Za-z0-9$%.,'-]+", query)
+        kept = [t for t in tokens if t.lower().strip(".,'") not in cls.QUERY_STOPWORDS]
+        return " ".join(kept)
+
+    @staticmethod
+    def _log_chunks(docs: List[Document], query: str, tag: str = "RETRIEVE") -> None:
+        if not docs:
+            log.warning("[%s] 0 chunks | query='%s'", tag, query)
+            return
+        log.info("[%s] %d chunks | query='%s'", tag, len(docs), query)
+        for i, d in enumerate(docs, start=1):
+            meta = d.metadata if hasattr(d, "metadata") else {}
+            src = meta.get("source") or f"doc_{i}"
+            preview = d.page_content[:100].replace("\n", " ")
+            log.info("[CHUNK %d] source='%s' | preview='%s...'", i, src, preview)
+
+    def _answer_from(self, docs: List[Document], query: str, limit: int) -> str:
+        """One LLM call: answer `query` from the top `limit` chunks."""
+        context = "\n\n".join(
+            f"[{i}] {d.page_content}" for i, d in enumerate(docs[:limit], start=1)
+        )
+        response = self.llm_fallback.invoke([
+            SystemMessage(content=self.ANSWER_PROMPT),
+            HumanMessage(content=f"Passages:\n{context}\n\nQuestion: {query}"),
+        ])
+        return (response.content or "").strip() or "Could not generate answer."
+
+    def generate_answer(self, state: RAGState) -> RAGState:
+        """Retrieve once, answer once — with one bounded retry on abstention.
+
+        History. This replaced a ReAct agent (2026-07-18) that made 3-5 LLM calls
+        per query, each re-sending the chunks, blowing Groq's 8000 TPM cap (429
+        spirals, 20-150s latency). But the swap was pushed without running the
+        answer gate, and when it was finally run (2026-08-03) key-figure
+        correctness had fallen 0.900 -> 0.500: the agent's repeat queries were
+        how it dug figures out of the report's financial tables, and retrieve-once
+        can only abstain when its single shot returns a mangled table. Widening
+        retrieval (Config.RETRIEVAL_K/RERANK_TOP_K, 8/5 -> 16/8) recovered part of
+        it, 0.500 -> 0.700, but not the figures that needed a differently-phrased
+        query rather than simply more candidates.
+
+        So: keep the fast single-shot path, and reproduce the ONE agent behaviour
+        that was earning its keep — a second look — under a hard cap of exactly
+        one retry. Cost model:
+          - answerable question (the common case): unchanged, 1 retrieval + 1 LLM
+            call. Zero added latency. This is what protects the ~3s response time.
+          - abstention: +1 retrieval and +1 LLM call, once. Never a loop, so the
+            worst case is bounded at ~2x, not the agent's unbounded 3-5x.
         """
         query = state.rewritten_query or state.question
         docs: List[Document] = self.retriever.invoke(query)
-        if not docs:
-            log.warning("[RETRIEVE] 0 chunks | query='%s'", query)
-        else:
-            log.info("[RETRIEVE] %d chunks | query='%s'", len(docs), query)
-            for i, d in enumerate(docs[:8], start=1):
-                meta = d.metadata if hasattr(d, "metadata") else {}
-                src = meta.get("source") or f"doc_{i}"
-                preview = d.page_content[:100].replace("\n", " ")
-                log.info("[CHUNK %d] source='%s' | preview='%s...'", i, src, preview)
+        self._log_chunks(docs, query)
 
-        context = "\n\n".join(
-            f"[{i}] {d.page_content}" for i, d in enumerate(docs[:8], start=1)
-        )
-        user_msg = f"Passages:\n{context}\n\nQuestion: {query}"
+        answer = self._answer_from(docs, query, limit=Config.RERANK_TOP_K)
 
-        # Single answer call (with retry/fallback for transient Groq errors).
-        response = self.llm_fallback.invoke([
-            SystemMessage(content=self.ANSWER_PROMPT),
-            HumanMessage(content=user_msg),
-        ])
-        answer = (response.content or "").strip() or "Could not generate answer."
+        # --- bounded second look -------------------------------------------
+        # Only on abstention, only once, and only if the rephrasing actually
+        # differs (an identical query would re-retrieve identical chunks and
+        # spend an LLM call to reach the same conclusion).
+        if self._is_abstention(answer):
+            alt_query = self._keyword_query(query)
+            if alt_query and alt_query.lower() != query.lower():
+                log.info("[RETRY] abstention detected | alt_query='%s'", alt_query)
+                alt_docs = self.retriever.invoke(alt_query)
+                self._log_chunks(alt_docs, alt_query, tag="RETRY-RETRIEVE")
+
+                # Union, new material first, deduped on content. Strictly additive:
+                # the retry can only ever see more than the first pass, never less.
+                seen = set()
+                merged: List[Document] = []
+                for d in alt_docs + docs:
+                    key = d.page_content[:200]
+                    if key not in seen:
+                        seen.add(key)
+                        merged.append(d)
+
+                retry_answer = self._answer_from(
+                    merged, query, limit=self.RETRY_CONTEXT_MAX
+                )
+                # Keep the retry only if it actually answered. A second abstention
+                # means the figure isn't retrievable at all (see the Q8 /
+                # data-center-revenue case in known_issues.md) and the first
+                # answer is just as honest.
+                if not self._is_abstention(retry_answer):
+                    log.info("[RETRY] recovered an answer on the second look")
+                    docs, answer = merged, retry_answer
+                else:
+                    log.info("[RETRY] second look also abstained, keeping first answer")
+            else:
+                log.info("[RETRY] skipped | rephrasing identical to original query")
 
         return RAGState(
             question=state.question,
