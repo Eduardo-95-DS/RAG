@@ -231,6 +231,21 @@ class RAGNodes:
         "its", "their", "that", "this", "there", "it",
     })
 
+    # Dropped by the third retry candidate. A financial table carries its period
+    # in a column header, not in every row, so a query repeating "fiscal year
+    # 2025" can pull year-labelled prose ahead of the row holding the number.
+    TEMPORAL_TOKENS = frozenset({
+        "fiscal", "year", "years", "fy", "fy2025", "fy2024", "fy2023",
+        "2025", "2024", "2023", "ended", "ending", "end",
+    })
+
+    # A retry candidate must change at least this many tokens to be worth a
+    # round trip. Observed 2026-08-03: the rewriter sometimes emits an already
+    # keyword-shaped query, so stripping it removed a single preposition ("from")
+    # and re-retrieved the identical chunks, spending a call to reach the same
+    # abstention. One-token differences are not different queries.
+    MIN_QUERY_DELTA = 2
+
     # Chunks fed to the retry answer call. Larger than the first pass because
     # this path has already failed once, so breadth is worth more than the token
     # saving — but bounded, since the TPM cap is real.
@@ -269,6 +284,54 @@ class RAGNodes:
         tokens = re.findall(r"[A-Za-z0-9$%.,'-]+", query)
         kept = [t for t in tokens if t.lower().strip(".,'") not in cls.QUERY_STOPWORDS]
         return " ".join(kept)
+
+    @classmethod
+    def _drop_temporal(cls, query: str) -> str:
+        """Remove period qualifiers: 'income tax expense fiscal year 2025'
+        -> 'income tax expense'."""
+        tokens = re.findall(r"[A-Za-z0-9$%.,'-]+", query)
+        kept = [t for t in tokens if t.lower().strip(".,'") not in cls.TEMPORAL_TOKENS]
+        return " ".join(kept)
+
+    @staticmethod
+    def _token_set(text: str) -> set:
+        """Comparison tokens: lowercased, possessives and punctuation folded, so
+        'NVIDIA's' and 'NVIDIA' don't read as a difference."""
+        return {
+            t.lower().rstrip("'s").strip(".,'-")
+            for t in re.findall(r"[A-Za-z0-9$%.,'-]+", text or "")
+        } - {""}
+
+    @classmethod
+    def _pick_alt_query(cls, query: str, original: str) -> str:
+        """Choose a retry query that meaningfully differs from the one just used.
+
+        The rewriter's output shape is not consistent — on the same prompt and
+        pinned decoding it returns question form for some questions ("What was
+        NVIDIA's data center segment revenue in fiscal year 2025?") and already
+        keyword-shaped for others ("NVIDIA income tax expense fiscal year 2025").
+        So a single fixed transformation is a no-op roughly half the time: it was
+        skipped outright on the income-tax question and removed only the word
+        "from" on the operating-cash-flow one, both of which then failed.
+
+        Hence a ladder — take the first candidate that actually changes the query,
+        whichever direction that happens to be:
+          1. keyword form   (helps when the rewriter left question phrasing)
+          2. the original   (helps when the rewriter already stripped it)
+          3. drop the year  (helps when neither of the above moved enough)
+
+        Returns "" if nothing differs enough, in which case the caller skips the
+        retry rather than spending a call to re-ask the same thing.
+        """
+        keyword = cls._keyword_query(query)
+        base = cls._token_set(query)
+        for cand in (keyword, original, cls._drop_temporal(keyword)):
+            cand = (cand or "").strip()
+            if len(cand.split()) < 2:
+                continue
+            if len(base ^ cls._token_set(cand)) >= cls.MIN_QUERY_DELTA:
+                return cand
+        return ""
 
     @staticmethod
     def _log_chunks(docs: List[Document], query: str, tag: str = "RETRIEVE") -> None:
@@ -326,8 +389,8 @@ class RAGNodes:
         # differs (an identical query would re-retrieve identical chunks and
         # spend an LLM call to reach the same conclusion).
         if self._is_abstention(answer):
-            alt_query = self._keyword_query(query)
-            if alt_query and alt_query.lower() != query.lower():
+            alt_query = self._pick_alt_query(query, state.question)
+            if alt_query:
                 log.info("[RETRY] abstention detected | alt_query='%s'", alt_query)
                 alt_docs = self.retriever.invoke(alt_query)
                 self._log_chunks(alt_docs, alt_query, tag="RETRY-RETRIEVE")
@@ -355,7 +418,7 @@ class RAGNodes:
                 else:
                     log.info("[RETRY] second look also abstained, keeping first answer")
             else:
-                log.info("[RETRY] skipped | rephrasing identical to original query")
+                log.info("[RETRY] skipped | no candidate query differs enough")
 
         return RAGState(
             question=state.question,
