@@ -1,6 +1,6 @@
 # NVIDIA 2025 Annual Report — RAG Assistant
 
-A production-grade RAG system for question answering over the NVIDIA FY2025 Annual Report. Built with LangGraph, LangChain, FAISS, and Groq.
+A production-grade RAG system for question answering over the NVIDIA FY2025 Annual Report. Built with LangGraph, LangChain, Qdrant Cloud, and Groq.
 
 ## Architecture
 
@@ -65,7 +65,7 @@ BACKEND_URL=http://localhost:8000 uv run --no-project streamlit run streamlit_ap
 
 Or hit the API directly: `curl -X POST localhost:8000/query -H 'Content-Type: application/json' -d '{"question":"What were NVIDIA 2025 revenues?"}'`. Any client (a Slack bot, a CLI) can consume `/query` the same way.
 
-The FAISS index is built from the PDF on first run and cached to `faiss_index/` (and to GCS across Cloud Run cold starts). Subsequent runs load from cache.
+Retrieval needs a populated Qdrant collection. The backend does **not** build one at startup: ingestion is a separate one-off step (`ci/ingest_qdrant.py`, `--wipe` to drop and recreate), and both local runs and Cloud Run read `QDRANT_URL` / `QDRANT_API_KEY` from the environment. Nothing is indexed at query time and there is no index round-trip on cold start.
 
 ## Configuration
 
@@ -76,23 +76,15 @@ All tuneable parameters are in `src/config/config.py`:
 | `CHUNK_SIZE` | 500 | Characters per chunk |
 | `CHUNK_OVERLAP` | 50 | 10% of chunk size — prevents boundary meaning loss |
 | `LLM_MODEL` | qwen/qwen3.6-27b | Primary Groq model |
-| `FALLBACK_MODEL` | openai/gpt-oss-20b | Fallback on primary failure (rewriter, ground check) |
+| `FALLBACK_MODEL` | openai/gpt-oss-20b | Fallback on primary failure — now used at every LLM call site (rewriter, responder, ground check, direct_answer) |
 | `LLM_MAX_RETRIES` | 3 | Retries per model on transient errors |
 | `REASONING_FORMAT` | hidden | Suppress reasoning tokens from output (qwen3.6 is a reasoning model) |
 
 ## Retrieval Evaluation
 
-Two ways to run the same 25 query/keyword test cases (hit rate / Recall@5, mean context precision):
+25 query/keyword test cases (hit rate / Recall@5, mean context precision), run via Cloud Build.
 
-**Local, ad hoc** — `eval/retrieval_eval.py`, gitignored, local-only, no gate, just prints a report:
-
-```bash
-python eval/retrieval_eval.py
-```
-
-Requires a local `faiss_index/` (built by the app, or pulled from GCS yourself).
-
-**Cloud Build, on demand** — `ci/retrieval_eval.py` via the `rag-gcp-eval-manual` trigger. Pulls the live GCS-cached index (the one Cloud Run actually serves), runs the same test cases, and fails the build if hit rate drops below 90%:
+**`ci/retrieval_eval.py` via the `rag-gcp-eval-manual` trigger.** Queries the live Qdrant collection (the same one Cloud Run serves) and fails the build if hit rate drops below 90%:
 
 ```bash
 gcloud builds triggers run rag-gcp-eval-manual --branch=rag-gcp --region=southamerica-east1
@@ -102,7 +94,11 @@ gcloud builds log <build-id> --region=southamerica-east1
 
 Not wired to push — retrieval quality doesn't change on most commits, so this stays manual. Run it after any change to chunk size, embedding model, or reranker settings.
 
-**Baseline (Qdrant hybrid, k=8, rerank top_k=5, `text-embedding-005` dense + BM42 sparse):** 100% hit rate, 56% mean context precision (item 9, 2026-07-18). Hit rate held; precision moved from the previous 61% (local FAISS + BM25) — expected, since Qdrant's server-side RRF + BM42 replace local RRF + rank_bm25, and the guide flags this as movement to measure, not a regression (recall is what matters and it's unchanged). History: FAISS+BM25 was 100%/61% (held across the item-7 FlashRank swap); before that `bge-small-en-v1.5` was 96%/53%.
+There is also a gitignored local script, `eval/retrieval_eval.py`, from before the Qdrant migration. It still calls `VectorStore.load("faiss_index")`, which no longer exists, so **it does not run** — `ci/retrieval_eval.py` is the only working path. Delete or port it.
+
+**Baseline (Qdrant hybrid, k=8, rerank top_k=5, `text-embedding-005` dense + BM42 sparse):** 100% hit rate, 55% mean context precision (re-measured 2026-08-03). History: 56% on the first Qdrant run (2026-07-18) — a one-chunk difference, i.e. noise; 100%/61% under FAISS+BM25 (held across the item-7 FlashRank swap); 96%/53% under `bge-small-en-v1.5`.
+
+The precision drop from the Qdrant migration looks worse than it is. The 2026-08-03 A/B showed answer quality was **identical** before and after the migration (0.90 groundedness / 4.60 QA quality either side), so those 6 points of context precision were not affecting answers. Hit rate is the number that matters here.
 
 ## Answer Quality Evaluation
 
@@ -124,7 +120,19 @@ Three metrics (two Vertex LLM-judge + one local deterministic):
 
 Not wired to push, same reasoning as the retrieval gate. Run manually after prompt, model, or guardrail changes. **Runs `--limit=10` permanently** (the quantitative financial questions) — the full 25-question run can't complete under qwen3.6's 8000 TPM cap; see `known_issues.md`.
 
-**Baseline (2026-07-15, qwen/qwen3.6-27b, 10-financial subset):** groundedness 0.90, question_answering_quality 4.60/5, key-figure correctness 0.80-0.90 (9/10 answers carry the right figure; the occasional miss is the guardrail intermittently over-rejecting a financial question to the fallback, not a wrong number). Note: on this financial subset groundedness is 0.90, well above the 0.72 seen on the full 25 — the earlier low figure was concentrated in the open-ended qualitative questions, where the model elaborates beyond the passages.
+> ⚠️ **This gate currently FAILS on `rag-gcp`.** Measured 2026-08-03: groundedness 1.00, QA quality 5.00/5, **key-figure correctness 0.500 against a gate of 0.80**. Five of ten financial answers state no correct figure (EPS, income tax, operating cash flow, data center revenue, gaming revenue). See `known_issues.md`.
+>
+> The high groundedness and QA-quality scores are misleading, not reassuring. The model answers "I couldn't find that in the report" on the questions it can't handle, and an abstention is trivially grounded and reads as a well-formed answer, so both reference-free judges score it top marks. Only the local key-figure check caught this.
+
+**Cause, isolated by A/B on 2026-08-03:** the 2026-07-18 responder rewrite (ReAct agent → retrieve-once-then-answer). Running the same eval against `d6db045`, the direct parent of that commit, scores **0.900** correctness on the same Qdrant collection with the same script. The agent's ability to re-query with different phrasing was recovering figures buried in the financial tables; retrieve-once gets one shot and abstains when that shot returns a mangled table.
+
+**Historical baselines**, for comparison — note the pre-rewrite control reproduced the FAISS-era numbers exactly, meaning the Qdrant migration did not move answer quality at all:
+
+| Run | Groundedness | QA quality | Key-figure correctness |
+|---|---|---|---|
+| 2026-07-15, FAISS, pre-rewrite | 0.90 | 4.60/5 | 0.80-0.90 |
+| 2026-08-03, Qdrant, pre-rewrite (`d6db045`) | 0.90 | 4.60/5 | 0.900 |
+| 2026-08-03, Qdrant, post-rewrite (`17d8bba`) | 1.00 | 5.00/5 | **0.500** |
 
 Requires `GROQ_API_KEY` (Secret Manager, `rag-cloudbuild@` needs `roles/secretmanager.secretAccessor` on it) to generate answers, and the Generative Language API (`generativelanguage.googleapis.com`) enabled on the project for the judge model call — this was the actual blocker the first time this was set up, not an IAM role gap.
 
@@ -136,7 +144,7 @@ The retrieval and answer gates say nothing about the *input router* (item 4: the
 gcloud builds triggers run rag-gcp-guardrail-eval-manual --branch=rag-gcp --region=southamerica-east1
 ```
 
-Cheaper than the other two gates: no FAISS index pull (the classifier never retrieves) and no Vertex judge model (scoring is plain TP/FP/FN arithmetic). Only needs `GROQ_API_KEY`. REFUSE is the positive class (catching jailbreaks is the safety-critical job); the gate checks REFUSE precision/recall plus overall accuracy, and a full confusion matrix is printed.
+Cheaper than the other two gates: no Qdrant query at all (the classifier never retrieves, so it runs with a no-op retriever) and no Vertex judge model (scoring is plain TP/FP/FN arithmetic). Only needs `GROQ_API_KEY`. REFUSE is the positive class (catching jailbreaks is the safety-critical job); the gate checks REFUSE precision/recall plus overall accuracy, and a full confusion matrix is printed.
 
 | Metric | Gate | What it checks |
 |---|---|---|
@@ -144,31 +152,39 @@ Cheaper than the other two gates: no FAISS index pull (the classifier never retr
 | REFUSE precision | ≥ 0.90 | When it refuses, is the input actually off-topic/jailbreak? (few false refusals of real questions) |
 | REFUSE recall | ≥ 0.80 | Of the inputs that should be refused, how many are caught? |
 
-Not wired to push; run manually after any change to the router prompt or the model. **Baseline (2026-07-15, qwen/qwen3.6-27b, 36 labeled inputs):** accuracy 1.000, REFUSE precision 1.000, REFUSE recall 1.000 (14/14 retrieve, 8/8 conversational, 14/14 refuse incl. all 8 jailbreak strings). Gates are deliberately kept at 0.90/0.80/0.85 rather than 1.0 — a perfect score on a hand-built set shouldn't turn into a gate that reds the build on one unlucky misroute; the current floor still catches a real regression while tolerating normal LLM variance.
+Not wired to push; run manually after any change to the router prompt or the model. **Last recorded baseline (2026-07-15, qwen/qwen3.6-27b, 36 labeled inputs):** accuracy 1.000, REFUSE precision 1.000, REFUSE recall 1.000 (14/14 retrieve, 8/8 conversational, 14/14 refuse incl. all 8 jailbreak strings). Gates are deliberately kept at 0.90/0.80/0.85 rather than 1.0 — a perfect score on a hand-built set shouldn't turn into a gate that reds the build on one unlucky misroute; the current floor still catches a real regression while tolerating normal LLM variance. Unlike the answer-quality baseline above, this one is still current: routing is decided entirely in the rewriter, which neither the Qdrant migration nor the responder rewrite touched.
 
 ## Project Structure
 
 ```
 src/
-  config/           Config class (model, chunking params)
-  document_ingestion/  PDF/URL loading and chunking
-  vectorstore/      VectorStore, HybridRetriever, CrossEncoderReranker
-  node/             RAGNodes (rewrite_query, generate_answer, ground_check)
+  api/main.py       FastAPI backend: /healthz, /query, /feedback, /graph; X-API-Key auth
+  app_factory.py    UI-free pipeline bootstrap (build_pipeline) — wires the
+                    Qdrant retriever into the graph; no index build or download
+  config/           Config class (models, chunking, Qdrant URL/collection/vectors)
+  document_ingestion/  PDF loading (incl. gs://) and chunking
+  vectorstore/      VectorStore, HybridRetriever (Qdrant), CrossEncoderReranker (FlashRank)
+  node/             RAGNodes (rewrite_query + route, generate_answer,
+                    ground_check, direct_answer, refuse)
   graph_builder/    LangGraph workflow assembly
   state/            RAGState (Pydantic)
-  logging/          Rotating file logger
-
-eval/
-  retrieval_eval.py   Local-only retrieval quality script (gitignored)
+  feedback/         Firestore feedback writes
+  logging/          stdout + rotating file logger
 
 ci/
-  retrieval_eval.py       Same retrieval eval, exit-code gate, run via Cloud Build
+  ingest_qdrant.py        One-off corpus ingestion into Qdrant (--wipe to rebuild)
+  retrieval_eval.py       Retrieval eval, exit-code gate, run via Cloud Build
   answer_quality_eval.py  Full-pipeline answer quality gate (Gen AI eval service)
+  guardrail_eval.py       Routing/guardrail eval, classifier-only, 36 labeled inputs
 
-data/               Source PDFs
-faiss_index/        Persisted FAISS index (gitignored)
-streamlit_app.py    UI entry point
-cloudbuild.yaml             Push-triggered build/deploy (rag-gcp-push-deploy)
-cloudbuild-eval.yaml        Manual retrieval eval gate (rag-gcp-eval-manual)
-cloudbuild-answer-eval.yaml Manual answer-quality eval gate (rag-gcp-answer-eval-manual)
+data/               Source PDFs (runtime reads the copy in GCS, not this one)
+streamlit_app.py    Thin Streamlit client — POSTs to the backend's /query
+Dockerfile.api      Full pipeline image (uvicorn)
+Dockerfile.ui       Thin UI image (streamlit + requests only)
+cloudbuild.yaml                Push-triggered build/deploy of both services
+cloudbuild-eval.yaml           Manual retrieval eval gate (rag-gcp-eval-manual)
+cloudbuild-answer-eval.yaml    Manual answer-quality gate (rag-gcp-answer-eval-manual)
+cloudbuild-guardrail-eval.yaml Manual routing gate (rag-gcp-guardrail-eval-manual)
 ```
+
+Leftovers not in the runtime path: `Dockerfile` (the pre-item-8 monolith image, still tracked but unused), `faiss_index/` and `eval/` (both gitignored, both dead since the Qdrant migration).
