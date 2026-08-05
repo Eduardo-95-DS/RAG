@@ -88,7 +88,11 @@ All tuneable parameters are in `src/config/config.py`:
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | 500 / 50 | Changing either requires `ci/ingest_qdrant.py --wipe`. See the known issue below |
 | `QWEN_REASONING_EFFORT` / `REASONING_FORMAT` / `GPTOSS_REASONING_EFFORT` | none / hidden / low | Only apply to the Groq models; Anthropic needs neither |
 
-**Known issue — the main open one.** `CHUNK_SIZE = 500` cuts financial-statement tables so that a row's label and its value land in different chunks. Retrieval finds the right table, the label is present, the number isn't. That is why a handful of questions (operating cash flow, employee count) fail regardless of retrieval settings or model, and it occasionally produces a *wrong* figure rather than an honest "I couldn't find it". Fix and falsifiable test in `known_issues.md`.
+**Known issue — the main open one.** A few questions (operating cash flow, employee count, shareholder returns) fail the answer eval no matter the retrieval width, query phrasing or model. The chunk holding each answer *does* exist — `ci/inspect_chunks.py` verified label and value sit together for every failing question, with passing questions as controls — so it is not a chunking or corpus problem. Either retrieval isn't ranking that chunk into the top 8, or it is and the model isn't using it. Diagnosis open; see `known_issues.md` item 4.
+
+```bash
+uv run python ci/inspect_chunks.py    # audit the collection for label/value pairs
+```
 
 ## Retrieval Evaluation
 

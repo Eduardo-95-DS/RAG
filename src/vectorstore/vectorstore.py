@@ -112,7 +112,22 @@ class HybridRetriever:
         self._sparse = SparseTextEmbedding(model_name=Config.SPARSE_MODEL)
 
     def _sparse_query(self, query: str) -> models.SparseVector:
-        sv = next(iter(self._sparse.embed([query])))
+        """Embed the QUERY side of BM42 — not the same call as the document side.
+
+        Was `self._sparse.embed([query])` from the item-9 migration (2026-07-18)
+        until 2026-08-05. `embed()` produces DOCUMENT vectors, whose term values
+        are attention weights: the transformer decides which terms matter given
+        the surrounding text. Over a 7-word query there is no surrounding text,
+        so those weights are noise. `query_embed()` is the query-side call, and
+        the collection is configured with `modifier=IDF`, which expects
+        query-side values that Qdrant then scales — feeding it document-side
+        attention weights corrupts the scoring.
+
+        Effect was erratic rather than total: queries whose attention happened
+        to land on the right terms still worked, which is why this survived a
+        100%-hit-rate retrieval eval. See known_issues.md item 4.
+        """
+        sv = next(iter(self._sparse.query_embed(query)))
         return models.SparseVector(indices=sv.indices.tolist(), values=sv.values.tolist())
 
     def invoke(self, query: str) -> List[Document]:
