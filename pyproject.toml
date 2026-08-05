@@ -57,6 +57,7 @@ dependencies = [
     # (Dockerfile.ui) installs just the `ui` dependency group below.
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
+    "langchain-anthropic>=1.5.3",
 ]
 
 # Thin-UI dependency group (item 8): the split Streamlit client needs ONLY

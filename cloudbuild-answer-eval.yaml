@@ -7,16 +7,17 @@
 # and scores the final answers with the Vertex AI Gen AI evaluation service
 # (groundedness, question_answering_quality). See ci/answer_quality_eval.py.
 #
-# Needs the GROQ_API_KEY secret (the app's own LLM, used to generate
-# answers) — via Cloud Build's availableSecrets/secretEnv, not Cloud Run's
+# Secrets come via Cloud Build's availableSecrets/secretEnv, NOT Cloud Run's
 # --set-secrets flag (that syntax only applies to `gcloud run deploy`, not a
-# build step). rag-cloudbuild@ needs roles/secretmanager.secretAccessor on
-# the groq-api-key secret for this to resolve.
-# Needs GROQ_API_KEY (the app's own LLM, to generate answers) plus, since item 9,
-# QDRANT_URL + QDRANT_API_KEY (retrieval is served by Qdrant Cloud now — no FAISS
-# index pull). All via Cloud Build's availableSecrets/secretEnv.
+# build step). rag-cloudbuild@ needs roles/secretmanager.secretAccessor on each
+# secret named below or they silently fail to resolve.
+#   ANTHROPIC_API_KEY - the app's primary LLM since 2026-08-03, generates answers
+#   GROQ_API_KEY      - still needed: gpt-oss-20b is the cross-provider fallback
+#   QDRANT_URL/_KEY   - retrieval (item 9; no FAISS index pull any more)
 availableSecrets:
   secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/anthropic-api-key/versions/latest
+      env: ANTHROPIC_API_KEY
     - versionName: projects/$PROJECT_ID/secrets/groq-api-key/versions/latest
       env: GROQ_API_KEY
     - versionName: projects/$PROJECT_ID/secrets/qdrant-url/versions/latest
@@ -28,7 +29,7 @@ steps:
   # Item 9: no gsutil FAISS-index pull — the in-process pipeline queries Qdrant.
   - name: "python:3.13-slim"
     entrypoint: "bash"
-    secretEnv: ["GROQ_API_KEY", "QDRANT_URL", "QDRANT_API_KEY"]
+    secretEnv: ["ANTHROPIC_API_KEY", "GROQ_API_KEY", "QDRANT_URL", "QDRANT_API_KEY"]
     args:
       - "-c"
       - |
@@ -39,21 +40,42 @@ steps:
         # FlashRank reranker (item 7) model cache — writable /workspace path
         # (build isn't in /app; the app image bakes it at /app/.flashrank_cache).
         export FLASHRANK_CACHE_DIR=/workspace/.flashrank_cache
+        # --limit REMOVED 2026-08-05: all 25 questions now run.
+        #
+        # It was pinned to 10 because qwen3.6-27b on Groq's free tier capped at
+        # 8000 TPM and the full run died around question 18. That constraint went
+        # away with the move to Anthropic (~50k ITPM; the whole run is ~70k input
+        # tokens spread over minutes). This is the point of the provider swap:
+        # at n=10 each question was worth 0.100 of the correctness score, which is
+        # WIDER than the effects being measured — several 2026-08-03 A/B results
+        # were indistinguishable from noise. At n=25 per-question weight drops to
+        # 0.040 and the metric can finally resolve a one-question change.
+        #
+        # ⚠️ THE CORRECTNESS METRIC NOW MEANS SOMETHING DIFFERENT. KEY_FIGURES has
+        # 25 entries, not 10: indices 10-24 hold loose key TERMS for the
+        # qualitative questions ("international", "outside the united states"),
+        # not verifiable figures. So correctness is no longer "are the financial
+        # numbers right" — it is a mix of exact-figure matching and keyword
+        # presence, and the two behave nothing alike.
+        #
+        # The --fail-under-qa-correctness=0.8 below was calibrated against the
+        # 10-question financial subset. It is NOT calibrated for this. Treat the
+        # first all-25 run as a MEASUREMENT, not a gate: read the per-question
+        # miss list, decide what the threshold should be, then set it. Re-setting
+        # a threshold because the metric's definition changed is legitimate;
+        # lowering one because a build went red is not. See the metric-scale bug
+        # in known_issues.md for why this distinction matters here.
+        #
+        # If you'd rather keep correctness comparable to every prior baseline,
+        # score it on QUESTIONS[:10] while still running all 25 for groundedness
+        # and QA quality — that needs a small change in key_figure_correctness().
+        #
+        # RPM, not tokens, is the remaining ceiling (~50 RPM; 25 questions x 3+
+        # calls). The script's inter-question pacing covers it — don't remove it.
         uv run python ci/answer_quality_eval.py \
-          --limit=10 \
           --fail-under-groundedness=0.7 \
           --fail-under-qa-quality=3.5 \
           --fail-under-qa-correctness=0.8
-        # --limit=10 is deliberate and permanent (not a temporary workaround):
-        # under qwen3.6-27b's 8000 TPM free-tier cap, the full 25-question run
-        # can't complete (dies ~18/25 firing the multi-call graph; see
-        # known_issues.md). The first 10 questions are exactly the quantitative
-        # financial block (revenue, net income, EPS, SG&A, tax, cash flow, cash
-        # balances, data center / gaming / proviz revenue) — the highest-value
-        # set for the reference-based correctness metric, since exact numbers are
-        # objectively checkable against the golden answers. So this gate now
-        # means "the financial answers are correct and grounded," a narrower but
-        # reliably-completing guarantee. Raise the limit if the TPM cap is lifted.
 
 # No images built, no deploy — this pipeline only reports pass/fail.
 options:

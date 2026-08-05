@@ -282,6 +282,21 @@ class RAGNodes:
             preview = d.page_content[:100].replace("\n", " ")
             log.info("[CHUNK %d] source='%s' | preview='%s...'", i, src, preview)
 
+    @staticmethod
+    def _answering_model(response) -> str:
+        """Which model actually produced this response.
+
+        `with_fallbacks` engages SILENTLY: when the primary exhausts its retries
+        (e.g. on a 429 burst) the call lands on the fallback model with no signal
+        to the caller. That is the leading suspect for the 2026-08-03 eval
+        instability, where questions changed pass/fail across runs of identical
+        code. Logging it costs nothing and makes the hypothesis falsifiable.
+
+        Providers disagree on the key, hence the fallback chain.
+        """
+        meta = getattr(response, "response_metadata", None) or {}
+        return meta.get("model_name") or meta.get("model") or "unknown"
+
     def _answer_from(self, docs: List[Document], query: str, limit: int) -> str:
         """One LLM call: answer `query` from the top `limit` chunks."""
         context = "\n\n".join(
@@ -291,6 +306,7 @@ class RAGNodes:
             SystemMessage(content=self.ANSWER_PROMPT),
             HumanMessage(content=f"Passages:\n{context}\n\nQuestion: {query}"),
         ])
+        log.info("[MODEL] answer call served by '%s'", self._answering_model(response))
         return (response.content or "").strip() or "Could not generate answer."
 
     def generate_answer(self, state: RAGState) -> RAGState:
