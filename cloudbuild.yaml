@@ -47,7 +47,9 @@ steps:
       - "--service-account=rag-cloudrun@$PROJECT_ID.iam.gserviceaccount.com"
       # Backend gets the Groq + LangSmith secrets AND the shared API_KEY.
       # Item 9: rag-api needs QDRANT_URL + QDRANT_API_KEY (retrieval is Qdrant now).
-      - "--set-secrets=GROQ_API_KEY=groq-api-key:latest,LANGSMITH_API_KEY=langsmith-api-key:latest,API_KEY=rag-api-key:latest,QDRANT_URL=qdrant-url:latest,QDRANT_API_KEY=qdrant-api-key:latest"
+      # ANTHROPIC_API_KEY is the primary LLM since 2026-08-03; GROQ_API_KEY is
+      # still required because gpt-oss-20b remains the cross-provider fallback.
+      - "--set-secrets=ANTHROPIC_API_KEY=anthropic-api-key:latest,GROQ_API_KEY=groq-api-key:latest,LANGSMITH_API_KEY=langsmith-api-key:latest,API_KEY=rag-api-key:latest,QDRANT_URL=qdrant-url:latest,QDRANT_API_KEY=qdrant-api-key:latest"
       - "--set-env-vars=LANGSMITH_TRACING=true,LANGSMITH_PROJECT=rag-gcp"
       - "--memory=2Gi"
       - "--cpu=2"

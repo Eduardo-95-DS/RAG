@@ -8,11 +8,14 @@
 #
 # Cheaper than the other two eval gates: NO FAISS index pull (the classifier
 # never retrieves) and NO Vertex judge model (scoring is plain TP/FP/FN
-# arithmetic). It only needs GROQ_API_KEY for the classifier LLM call —
-# via Cloud Build's availableSecrets/secretEnv. rag-cloudbuild@ needs
-# roles/secretmanager.secretAccessor on the groq-api-key secret.
+# arithmetic). It needs only the LLM keys for the classifier call, via Cloud
+# Build's availableSecrets/secretEnv: ANTHROPIC_API_KEY for the primary (since
+# 2026-08-03) and GROQ_API_KEY for the cross-provider fallback. rag-cloudbuild@
+# needs roles/secretmanager.secretAccessor on both.
 availableSecrets:
   secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/anthropic-api-key/versions/latest
+      env: ANTHROPIC_API_KEY
     - versionName: projects/$PROJECT_ID/secrets/groq-api-key/versions/latest
       env: GROQ_API_KEY
 
@@ -21,7 +24,7 @@ steps:
   # No gsutil / FAISS step — the router doesn't retrieve.
   - name: "python:3.13-slim"
     entrypoint: "bash"
-    secretEnv: ["GROQ_API_KEY"]
+    secretEnv: ["ANTHROPIC_API_KEY", "GROQ_API_KEY"]
     args:
       - "-c"
       - |
