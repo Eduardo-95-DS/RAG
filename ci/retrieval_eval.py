@@ -175,10 +175,18 @@ def run_eval(fail_under_hit_rate: float) -> int:
 
     # Item 9: retrieval is served by Qdrant Cloud — no local index to load.
     vs = VectorStore()
-    retriever = vs.get_hybrid_retriever(k=8, rerank_top_k=5)
+    # Read width from Config so this gate measures what the app actually serves.
+    # Was hardcoded k=8/rerank_top_k=5 until 2026-08-05, which meant it kept
+    # reporting on a narrower retriever than production after Config went to
+    # 16/8 — deliberate during the 2026-08-03 experiment (kept the baseline
+    # comparable while tuning), wrong to leave in place afterwards.
+    retriever = vs.get_hybrid_retriever(
+        k=Config.RETRIEVAL_K, rerank_top_k=Config.RERANK_TOP_K
+    )
 
     print(f"Index : Qdrant collection '{Config.QDRANT_COLLECTION}'")
-    print(f"Retriever : HybridRetriever (Qdrant dense+sparse RRF)  k=8  rerank top_k=5")
+    print(f"Retriever : HybridRetriever (Qdrant dense+sparse RRF)  "
+          f"k={Config.RETRIEVAL_K}  rerank top_k={Config.RERANK_TOP_K}")
     print(f"Test cases: {len(TEST_CASES)}")
     print(f"Gate : hit rate must be >= {fail_under_hit_rate:.0%}")
     print()
@@ -202,8 +210,12 @@ def run_eval(fail_under_hit_rate: float) -> int:
     hit_rate = hits / n
     mean_precision = sum(precisions) / n
 
-    print(f"Hit rate (Recall@5)   : {hits}/{n}  ({hit_rate:.0%})")
-    print(f"Mean context precision: {mean_precision:.0%}")
+    print(f"Hit rate (Recall@{Config.RERANK_TOP_K})   : {hits}/{n}  ({hit_rate:.0%})")
+    print(f"Mean context precision@{Config.RERANK_TOP_K}: {mean_precision:.0%}")
+    print("  NOTE: precision is per-chunk, so widening rerank_top_k lowers it "
+          "mechanically (same relevant chunks over a larger denominator). "
+          "Compare only against baselines at the SAME top_k. The gate is on hit "
+          "rate, which widening can only help.")
 
     if misses:
         print()
