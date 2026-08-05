@@ -143,7 +143,21 @@ class Config:
     # first — if the missing figures sit at ranks 6-10, this recovers them at no
     # TPM cost. RERANK_TOP_K = 8 is the natural ceiling: generate_answer already
     # slices docs[:8] when building the context block.
+    # DO NOT raise this to chase the failing table questions — that experiment was
+    # run on 2026-08-05 and answered. ci/inspect_fusion.py put the
+    # operating-cash-flow chunk at fused rank 35, so at k=16 it never reached the
+    # reranker. Raising k to 50 DID place it in the candidate pool, and FlashRank
+    # still left it out of the top 8. So the bottleneck is the cross-encoder, not
+    # prefetch depth, and k=50 only bought ~3x the local reranking work per query
+    # (a real cost against the ~7.4s median) for no recovered answer. Reverted.
+    #
+    # The remaining lever for those questions is the reranker itself — see
+    # known_issues.md item 4.
     RETRIEVAL_K = 16
+    # generate_answer slices docs[:RERANK_TOP_K] into the prompt, so raising THIS
+    # costs prompt tokens on every query — unlike RETRIEVAL_K, which costs none.
+    # Raised 5 -> 8 on 2026-08-03 (worth ~2 questions of correctness); 8 is the
+    # practical ceiling without also touching generate_answer.
     RERANK_TOP_K = 8
 
     # Env var holding the key for each provider prefix used in a model string.
