@@ -106,9 +106,13 @@ Not wired to push — retrieval quality doesn't change on most commits, so this 
 
 There is also a gitignored local script, `eval/retrieval_eval.py`, from before the Qdrant migration. It still calls `VectorStore.load("faiss_index")`, which no longer exists, so **it does not run** — `ci/retrieval_eval.py` is the only working path. Delete or port it.
 
-> ⚠️ **This gate measures a narrower configuration than the app serves.** `ci/retrieval_eval.py` is hardcoded at `k=8, rerank_top_k=5`, while the app reads `Config.RETRIEVAL_K/RERANK_TOP_K` (16/8). Left that way deliberately during the 2026-08-03 retrieval experiment so the baseline stayed comparable; still open.
+**Baseline (2026-08-05, production width `RETRIEVAL_K=16` / `RERANK_TOP_K=8`, `text-embedding-005` dense + BM42 sparse):** **100% hit rate (Recall@8), 48% mean context precision@8.**
 
-**Baseline (Qdrant hybrid, k=8, rerank top_k=5, `text-embedding-005` dense + BM42 sparse):** 100% hit rate, 55% mean context precision (re-measured 2026-08-03). History: 56% on the first Qdrant run (2026-07-18) — a one-chunk difference, i.e. noise; 100%/61% under FAISS+BM25 (held across the item-7 FlashRank swap); 96%/53% under `bge-small-en-v1.5`.
+> ⚠️ **Precision is not comparable across different `top_k`.** It's a per-chunk ratio, so a wider reranker lowers it mechanically — the same relevant chunks over a bigger denominator. Compare only against baselines at the same `top_k`; the gate is on hit rate, which widening can only help.
+>
+> Worth noting the drop beat the mechanical floor: 55% at top_k=5 is ~2.75 relevant chunks, so ranks 6-8 contributing nothing would give ~34%. The actual 48% means those three extra ranks carried ~1.1 more relevant chunks. The reranker is still finding real signal there.
+
+Historical, all at `top_k=5`: 55% (2026-08-03), 56% on the first Qdrant run (2026-07-18) — a one-chunk difference, i.e. noise; 100%/61% under FAISS+BM25 (held across the item-7 FlashRank swap); 96%/53% under `bge-small-en-v1.5`.
 
 The precision drop from the Qdrant migration looks worse than it is. The 2026-08-03 A/B showed answer quality was **identical** before and after the migration (0.90 groundedness / 4.60 QA quality either side), so those 6 points of context precision were not affecting answers. Hit rate is the number that matters here.
 
@@ -174,7 +178,7 @@ Cheaper than the other two gates: no Qdrant query at all (the classifier never r
 | REFUSE precision | ≥ 0.90 | When it refuses, is the input actually off-topic/jailbreak? (few false refusals of real questions) |
 | REFUSE recall | ≥ 0.80 | Of the inputs that should be refused, how many are caught? |
 
-Not wired to push; run manually after any change to the router prompt or the model. **Last recorded baseline (2026-07-15, qwen/qwen3.6-27b, 36 labeled inputs) — not yet re-run on Claude Haiku 4.5, so treat it as historical:** accuracy 1.000, REFUSE precision 1.000, REFUSE recall 1.000 (14/14 retrieve, 8/8 conversational, 14/14 refuse incl. all 8 jailbreak strings). Gates are deliberately kept at 0.90/0.80/0.85 rather than 1.0 — a perfect score on a hand-built set shouldn't turn into a gate that reds the build on one unlucky misroute; the current floor still catches a real regression while tolerating normal LLM variance. Unlike the answer-quality baseline above, this one is still current: routing is decided entirely in the rewriter, which neither the Qdrant migration nor the responder rewrite touched.
+Not wired to push; run manually after any change to the router prompt or the model. **Baseline (2026-08-05, Claude Haiku 4.5, 36 labeled inputs) — a perfect score, TP=14 FP=0 FN=0, all 8 jailbreak strings caught. Identical to the 2026-07-15 result under qwen3.6-27b, so routing is model-robust:** accuracy 1.000, REFUSE precision 1.000, REFUSE recall 1.000 (14/14 retrieve, 8/8 conversational, 14/14 refuse incl. all 8 jailbreak strings). Gates are deliberately kept at 0.90/0.80/0.85 rather than 1.0 — a perfect score on a hand-built set shouldn't turn into a gate that reds the build on one unlucky misroute; the current floor still catches a real regression while tolerating normal LLM variance. Unlike the answer-quality baseline above, this one is still current: routing is decided entirely in the rewriter, which neither the Qdrant migration nor the responder rewrite touched.
 
 ## Project Structure
 
