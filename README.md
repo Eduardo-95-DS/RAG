@@ -110,11 +110,13 @@ Not wired to push — retrieval quality doesn't change on most commits, so this 
 
 There is also a gitignored local script, `eval/retrieval_eval.py`, from before the Qdrant migration. It still calls `VectorStore.load("faiss_index")`, which no longer exists, so **it does not run** — `ci/retrieval_eval.py` is the only working path. Delete or port it.
 
-**Baseline (2026-08-05, production width `RETRIEVAL_K=16` / `RERANK_TOP_K=8`, `text-embedding-005` dense + BM42 sparse):** **100% hit rate (Recall@8), 48% mean context precision@8.**
+**Baseline (2026-08-05, production width `RETRIEVAL_K=16` / `RERANK_TOP_K=8`, `text-embedding-005` dense + BM42 sparse):** **100% hit rate (Recall@8), 50% mean context precision@8.**
 
 > ⚠️ **Precision is not comparable across different `top_k`.** It's a per-chunk ratio, so a wider reranker lowers it mechanically — the same relevant chunks over a bigger denominator. Compare only against baselines at the same `top_k`; the gate is on hit rate, which widening can only help.
 >
-> Worth noting the drop beat the mechanical floor: 55% at top_k=5 is ~2.75 relevant chunks, so ranks 6-8 contributing nothing would give ~34%. The actual 48% means those three extra ranks carried ~1.1 more relevant chunks. The reranker is still finding real signal there.
+> This eval has **no LLM in the loop** — Vertex embeddings, Qdrant search and FlashRank are all deterministic — so differences between runs at the same settings are real. The 48% → 50% step came from fixing the BM42 query-side embedding (see below).
+
+**The sparse channel was broken from 2026-07-18 to 2026-08-05.** `HybridRetriever._sparse_query` used `SparseTextEmbedding.embed()` — the document-side call — for queries. BM42 document vectors are attention-weighted from surrounding context, which a short query doesn't have, so the values were noise. Fixed to `query_embed()`. Every retrieval figure recorded in that window was measured on a half-broken hybrid, including the ones listed as historical below.
 
 Historical, all at `top_k=5`: 55% (2026-08-03), 56% on the first Qdrant run (2026-07-18) — a one-chunk difference, i.e. noise; 100%/61% under FAISS+BM25 (held across the item-7 FlashRank swap); 96%/53% under `bge-small-en-v1.5`.
 
@@ -206,6 +208,14 @@ ci/
   retrieval_eval.py       Retrieval eval, exit-code gate, run via Cloud Build
   answer_quality_eval.py  Full-pipeline answer quality gate (Gen AI eval service)
   guardrail_eval.py       Routing/guardrail eval, classifier-only, 36 labeled inputs
+
+  # Local diagnostics (no gate, no CI) — run when a question answers wrongly.
+  # Each isolates one stage, and each includes PASSING questions as controls,
+  # which is what makes the results interpretable.
+  inspect_chunks.py       Is the answer in the collection at all? (label+value in one chunk)
+  inspect_retrieval.py    Does the real retriever return that chunk, and at what rank?
+  inspect_fusion.py       Lost by fusion depth or by the reranker? Reports each channel
+  inspect_vectors.py      Are the points actually indexed? (dense dim, sparse terms)
 
 data/               Source PDFs (runtime reads the copy in GCS, not this one)
 streamlit_app.py    Thin Streamlit client — POSTs to the backend's /query
