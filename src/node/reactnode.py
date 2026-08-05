@@ -1,7 +1,6 @@
 """LangGraph nodes for the RAG workflow (rewriter/router, retrieve-then-answer
 responder, guardrail, and the direct-answer/refuse branches)."""
 import re
-from itertools import zip_longest
 from typing import List
 from src.config.config import Config
 from src.state.rag_state import RAGState
@@ -232,31 +231,6 @@ class RAGNodes:
         "its", "their", "that", "this", "there", "it",
     })
 
-    # Dropped by the third retry candidate. A financial table carries its period
-    # in a column header, not in every row, so a query repeating "fiscal year
-    # 2025" can pull year-labelled prose ahead of the row holding the number.
-    TEMPORAL_TOKENS = frozenset({
-        "fiscal", "year", "years", "fy", "fy2025", "fy2024", "fy2023",
-        "2025", "2024", "2023", "ended", "ending", "end",
-    })
-
-    # A retry candidate must change at least this many tokens to be worth a
-    # round trip. Observed 2026-08-03: the rewriter sometimes emits an already
-    # keyword-shaped query, so stripping it removed a single preposition ("from")
-    # and re-retrieved the identical chunks, spending a call to reach the same
-    # abstention. One-token differences are not different queries.
-    MIN_QUERY_DELTA = 2
-
-    # Alternate queries issued on the retry. >1 because the right rephrasing is
-    # question-specific and unknowable in advance: the income-tax question is
-    # only reachable from the original question form, the data-center one only
-    # from the keyword form, and picking either one alone traded a fix for a
-    # regression (0.900 -> 0.500 on whichever was sacrificed). Issuing both and
-    # pooling the results sidesteps the choice. Each costs one Qdrant round trip
-    # (~0.5s: embed, query, rerank) and NO extra LLM call, which is the point —
-    # Groq calls are what hurt under the TPM cap, retrievals are not.
-    MAX_RETRY_QUERIES = 2
-
     # Chunks fed to the retry answer call. Larger than the first pass because
     # this path has already failed once, so breadth is worth more than the token
     # saving — but bounded, since the TPM cap is real.
@@ -295,88 +269,6 @@ class RAGNodes:
         tokens = re.findall(r"[A-Za-z0-9$%.,'-]+", query)
         kept = [t for t in tokens if t.lower().strip(".,'") not in cls.QUERY_STOPWORDS]
         return " ".join(kept)
-
-    @classmethod
-    def _drop_temporal(cls, query: str) -> str:
-        """Remove period qualifiers: 'income tax expense fiscal year 2025'
-        -> 'income tax expense'."""
-        tokens = re.findall(r"[A-Za-z0-9$%.,'-]+", query)
-        kept = [t for t in tokens if t.lower().strip(".,'") not in cls.TEMPORAL_TOKENS]
-        return " ".join(kept)
-
-    @staticmethod
-    def _token_set(text: str) -> set:
-        """Comparison tokens: lowercased, possessives and punctuation folded, so
-        'NVIDIA's' and 'NVIDIA' don't read as a difference."""
-        return {
-            t.lower().rstrip("'s").strip(".,'-")
-            for t in re.findall(r"[A-Za-z0-9$%.,'-]+", text or "")
-        } - {""}
-
-    @classmethod
-    def _alt_queries(cls, query: str, original: str) -> List[str]:
-        """Up to MAX_RETRY_QUERIES re-queries that meaningfully differ from the
-        one just used, and from each other.
-
-        The rewriter's output shape is not consistent — on the same prompt and
-        pinned decoding it returns question form for some questions ("What was
-        NVIDIA's data center segment revenue in fiscal year 2025?") and already
-        keyword-shaped for others ("NVIDIA income tax expense fiscal year 2025").
-        So a single fixed transformation is a no-op roughly half the time, and
-        choosing one candidate is a coin flip on which question gets fixed: the
-        keyword form recovers the data-center figure but not income tax, the
-        original question recovers income tax but not data center. Measured both
-        ways; each choice cost what the other gained.
-
-        So return several and let the caller pool the results. Candidates, in the
-        order they're tried:
-          1. keyword form   (helps when the rewriter left question phrasing)
-          2. the original   (helps when the rewriter already stripped it)
-          3. drop the year  (helps when neither of the above moved enough)
-
-        Each must differ by >= MIN_QUERY_DELTA tokens from the original query AND
-        from every candidate already picked — two near-identical queries would
-        retrieve near-identical chunks and waste the round trip.
-
-        Returns [] if nothing differs enough, in which case the caller skips the
-        retry rather than re-asking the same thing.
-        """
-        keyword = cls._keyword_query(query)
-        picked: List[str] = []
-        seen_tokens = [cls._token_set(query)]
-        for cand in (keyword, original, cls._drop_temporal(keyword)):
-            cand = (cand or "").strip()
-            if len(cand.split()) < 2:
-                continue
-            tokens = cls._token_set(cand)
-            if all(len(tokens ^ prev) >= cls.MIN_QUERY_DELTA for prev in seen_tokens):
-                picked.append(cand)
-                seen_tokens.append(tokens)
-                if len(picked) >= cls.MAX_RETRY_QUERIES:
-                    break
-        return picked
-
-    @staticmethod
-    def _interleave(*doc_lists: List[Document]) -> List[Document]:
-        """Round-robin merge of ranked result lists, deduped on content.
-
-        Round-robin rather than concatenation so no single query's results
-        dominate the RETRY_CONTEXT_MAX cut: rank-1 from every query survives
-        before rank-2 from any of them. Callers pass the alternates first and
-        the original last, since the original's chunks already produced an
-        abstention and are the least valuable of the three.
-        """
-        merged: List[Document] = []
-        seen = set()
-        for tier in zip_longest(*doc_lists):
-            for doc in tier:
-                if doc is None:
-                    continue
-                key = doc.page_content[:200]
-                if key not in seen:
-                    seen.add(key)
-                    merged.append(doc)
-        return merged
 
     @staticmethod
     def _log_chunks(docs: List[Document], query: str, tag: str = "RETRIEVE") -> None:
@@ -417,18 +309,11 @@ class RAGNodes:
 
         So: keep the fast single-shot path, and reproduce the ONE agent behaviour
         that was earning its keep — a second look — under a hard cap of exactly
-        one extra answer call. Cost model, measured locally 2026-08-03:
+        one retry. Cost model:
           - answerable question (the common case): unchanged, 1 retrieval + 1 LLM
-            call, ~3.1-3.5s. Zero added latency. This is what protects the response
-            time the ReAct removal bought.
-          - abstention: +N retrievals (N = MAX_RETRY_QUERIES) and +1 LLM call,
-            once. Measured at +1.5s with one alternate; a second alternate adds
-            another ~0.5s round trip and no Groq call. Never a loop.
-
-        The asymmetry is deliberate. Retrievals are cheap and local-ish; Groq
-        calls are the scarce resource under the 8000 TPM free-tier cap, where a
-        throttled question was observed spending 26s in 429 backoff. So the retry
-        buys breadth with extra retrievals and spends exactly one more LLM call.
+            call. Zero added latency. This is what protects the ~3s response time.
+          - abstention: +1 retrieval and +1 LLM call, once. Never a loop, so the
+            worst case is bounded at ~2x, not the agent's unbounded 3-5x.
         """
         query = state.rewritten_query or state.question
         docs: List[Document] = self.retriever.invoke(query)
@@ -441,23 +326,21 @@ class RAGNodes:
         # differs (an identical query would re-retrieve identical chunks and
         # spend an LLM call to reach the same conclusion).
         if self._is_abstention(answer):
-            alt_queries = self._alt_queries(query, state.question)
-            if alt_queries:
-                log.info("[RETRY] abstention detected | %d alt quer%s: %s",
-                         len(alt_queries), "y" if len(alt_queries) == 1 else "ies",
-                         " || ".join(alt_queries))
+            alt_query = self._keyword_query(query)
+            if alt_query and alt_query.lower() != query.lower():
+                log.info("[RETRY] abstention detected | alt_query='%s'", alt_query)
+                alt_docs = self.retriever.invoke(alt_query)
+                self._log_chunks(alt_docs, alt_query, tag="RETRY-RETRIEVE")
 
-                # One retrieval per alternate. Cheap (embed + query + rerank);
-                # deliberately NOT one answer call per alternate.
-                alt_doc_lists: List[List[Document]] = []
-                for alt_query in alt_queries:
-                    alt_docs = self.retriever.invoke(alt_query)
-                    self._log_chunks(alt_docs, alt_query, tag="RETRY-RETRIEVE")
-                    alt_doc_lists.append(alt_docs)
-
-                # Pool everything, alternates first, original last. Strictly
-                # additive: the retry always sees a superset of the first pass.
-                merged = self._interleave(*alt_doc_lists, docs)
+                # Union, new material first, deduped on content. Strictly additive:
+                # the retry can only ever see more than the first pass, never less.
+                seen = set()
+                merged: List[Document] = []
+                for d in alt_docs + docs:
+                    key = d.page_content[:200]
+                    if key not in seen:
+                        seen.add(key)
+                        merged.append(d)
 
                 retry_answer = self._answer_from(
                     merged, query, limit=self.RETRY_CONTEXT_MAX
@@ -472,7 +355,7 @@ class RAGNodes:
                 else:
                     log.info("[RETRY] second look also abstained, keeping first answer")
             else:
-                log.info("[RETRY] skipped | no candidate query differs enough")
+                log.info("[RETRY] skipped | rephrasing identical to original query")
 
         return RAGState(
             question=state.question,
